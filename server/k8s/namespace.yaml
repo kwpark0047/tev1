@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tev1
+  labels:
+    name: tev1
+    environment: production

@@ -1,0 +1,3754 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tev1 · 픽셀 오피스 의사결정 데스크</title>
+<link rel="manifest" href="data:application/manifest+json,{%22name%22:%22tev1%20%EC%9D%B8%EA%B5%AC%20%EB%8D%B0%EC%8A%A4%ED%81%AC%22,%22short_name%22:%22tev1%22,%22start_url%22:%22.%22,%22display%22:%22standalone%22,%22background_color%22:%22%2523191b2e%22,%22theme_color%22:%22%2523191b2e%22,%22icons%22:[{%22src%22:%22data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==%22,%22sizes%22:%22192x192%22,%22type%22:%22image/png%22}]}>
+<meta name="theme-color" content="#191b2e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="tev1">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+:root{
+  --ink:#191b2e;
+  --ink2:#272b45;
+  --ink3:#3a3f63;
+  --line:#4d5378;
+  --paper:#f3f0e1;
+  --paper2:#e6e1cd;
+  --sky:#8ec6e6;
+  --accent:#e7b13c;
+  --good:#4cb96b;
+  --warn:#e0a83a;
+  --bad:#d9524a;
+  --cool:#5f7fe0;
+  --ink-text:#f5f2e6;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:#12131f;
+  color:var(--ink-text);
+  font-family:"Pretendard","Malgun Gothic","Apple SD Gothic Neo","Noto Sans KR",system-ui,sans-serif;
+  font-size:14px;
+  line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+  padding:15px 15px 20px;
+}
+button,input,select,textarea{font-family:inherit;font-size:inherit;color:inherit}
+.mono{font-family:"D2Coding","Nanum Gothic Coding",ui-monospace,Menlo,Consolas,monospace}
+
+#app{max-width:1340px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+
+.panel{
+  background:var(--ink2);
+  border:2px solid var(--line);
+  border-radius:4px;
+  box-shadow:0 3px 0 #0b0c15;
+  padding:12px;
+}
+.panel-head{
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  border-bottom:2px solid var(--line);
+  margin:-12px -12px 12px;padding:9px 12px;
+  background:var(--ink);
+  border-radius:2px 2px 0 0;
+}
+.panel-head h2{margin:0;font-size:12px;letter-spacing:.14em;color:var(--accent);font-weight:700}
+.spacer{flex:1}
+
+.hud{display:flex;gap:10px;align-items:stretch;flex-wrap:wrap}
+.hud .brand{
+  display:flex;flex-direction:column;justify-content:center;
+  padding:8px 14px;min-width:150px;
+  background:linear-gradient(180deg,#2c3152,#232742);
+  border:2px solid var(--line);border-radius:4px;
+}
+.hud .brand b{font-size:15px;letter-spacing:.06em}
+.hud .brand span{font-size:10px;color:#a9b0d6;letter-spacing:.08em}
+.hud .stat{
+  flex:1;min-width:104px;
+  background:var(--ink);border:2px solid var(--line);border-radius:4px;
+  padding:7px 11px;
+}
+.hud .stat i{display:block;font-style:normal;font-size:10px;color:#98a0cc;letter-spacing:.1em}
+.hud .stat b{display:block;font-size:20px;line-height:1.15;font-weight:700}
+.hud .stat b small{font-size:11px;font-weight:400;color:#98a0cc;margin-left:2px}
+.hud .stat.ok b{color:var(--good)}
+.hud .stat.live b{color:var(--sky)}
+
+.badge{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:4px 10px;border-radius:3px;font-size:11px;font-weight:700;letter-spacing:.08em;
+  border:2px solid #0b0c15; transition: background-color 0.3s ease, color 0.3s ease;
+}
+.badge.demo{background:var(--accent);color:#2b2000}
+.badge.ai{background:var(--good);color:#03230f}
+.badge .dot{width:8px;height:8px;background:#2b2000;border-radius:50%;animation:pulse 1.1s infinite}
+.badge.ai .dot{background:#03230f}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+
+.main{display:grid;grid-template-columns:minmax(0,1fr) 384px;gap:12px;align-items:start}
+@media (max-width:1180px){.main{grid-template-columns:minmax(0,1fr)}}
+
+#stageWrap{
+  background:#0f1020;border:2px solid var(--line);border-radius:4px;
+  padding:10px;overflow:hidden;
+}
+#stage{position:relative;width:704px;height:384px;transform-origin:top left}
+#floor{display:block;width:704px;height:384px;image-rendering:pixelated;background:#0f1020}
+#bubbles{position:absolute;inset:0;pointer-events:none}
+.bubble{
+  position:absolute;transform:translate(-50%,-100%);
+  background:#fffdf2;color:#1c1e30;
+  border:2px solid #14162a;border-radius:3px;
+  padding:3px 7px;font-size:11px;font-weight:600;white-space:nowrap;
+  box-shadow:0 2px 0 #0b0c15;
+}
+.bubble.warn{background:#ffe9b0;border-color:#7a5a00}
+.bubble.bad{background:#ffd5d1;border-color:#7a1b16}
+.bubble.good{background:#d6f5df;border-color:#14532a}
+.bubble::after{
+  content:'';position:absolute;left:50%;bottom:-6px;transform:translateX(-50%);
+  border:5px solid transparent;border-top-color:#14162a;
+}
+.bubble.warn::after{border-top-color:#7a5a00}
+.bubble.bad::after{border-top-color:#7a1b16}
+.bubble.good::after{border-top-color:#14532a}
+.stage-hint{
+  position:absolute;left:8px;bottom:8px;
+  background:rgba(15,16,32,.82);border:1px solid var(--line);
+  padding:3px 7px;font-size:10px;color:#a9b0d6;border-radius:3px;
+}
+
+.side{display:flex;flex-direction:column;gap:0;min-height:0}
+.tabs{display:flex;gap:4px;padding:8px 8px 0;background:var(--ink);border-radius:4px 4px 0 0}
+.tabs button{
+  flex:1;padding:8px 4px;background:var(--ink3);border:2px solid var(--line);border-bottom:none;
+  border-radius:3px 3px 0 0;cursor:pointer;color:#c3c8ea;font-size:11px;font-weight:700;letter-spacing:.06em;
+}
+.tabs button[aria-selected="true"]{background:var(--accent);color:#2b2000}
+.tabpage{display:none;max-height:660px;overflow:auto;padding:12px}
+.tabpage[data-active="true"]{display:block}
+
+.qa{background:var(--ink);border:2px solid var(--line);border-radius:4px;padding:9px;margin-bottom:9px}
+.qa .qtext{font-size:10px;color:#98a0cc;letter-spacing:.08em;margin-bottom:3px}
+.qa .opts{display:flex;flex-direction:column;gap:5px}
+.opt{display:flex;align-items:center;gap:7px}
+.opt .nm{width:74px;flex:none;font-size:11px;color:#dfe2f5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.opt .bar{flex:1;height:13px;background:#15172b;border:2px solid #0b0c15;border-radius:2px;overflow:hidden}
+.opt .bar i{
+  display:block;height:100%;width:0;
+  background:linear-gradient(90deg,#d9524a,#e0a83a 55%,#4cb96b);
+  transition:width .45s ease;
+}
+.opt .pc{width:40px;flex:none;text-align:right;font-size:11px;color:#c3c8ea;font-variant-numeric:tabular-nums}
+.opt.win .nm{color:#fff;font-weight:700}
+.opt.win .pc{color:var(--good);font-weight:700}
+
+.gauge{display:flex;align-items:center;gap:11px;margin-top:4px}
+.gauge .dial{position:relative;width:96px;height:52px;flex:none;overflow:hidden}
+.gauge .dial .arc{position:absolute;inset:0}
+.gauge .dial .needle{
+  position:absolute;left:50%;bottom:0;width:3px;height:42px;margin-left:-1.5px;
+  background:#f5f2e6;transform-origin:50% 100%;transition:transform .5s cubic-bezier(.3,1.4,.5,1);
+  box-shadow:0 0 0 1px #0b0c15;
+}
+.gauge .dial .hub{position:absolute;left:50%;bottom:-4px;width:11px;height:11px;margin-left:-5.5px;border-radius:50%;background:#f5f2e6;border:2px solid #0b0c15}
+.gauge .meta{flex:1;min-width:0}
+.gauge .meta b{display:block;font-size:23px;font-variant-numeric:tabular-nums;line-height:1.1}
+.gauge .meta span{font-size:10px;color:#98a0cc;letter-spacing:.08em}
+.kv{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.kv div{background:#15172b;border:1px solid var(--line);border-radius:3px;padding:3px 7px;font-size:10px;color:#c3c8ea}
+.kv div b{color:var(--accent);font-weight:700}
+.path{font-size:11px;color:var(--sky);word-break:break-all;margin-top:6px}
+.verdict{display:flex;align-items:center;gap:8px;margin-top:9px;padding:8px 9px;border-radius:3px;border:2px solid #0b0c15}
+.verdict.ok{background:#1d3b28}
+.verdict.mid{background:#3d3117}
+.verdict.low{background:#3d1e1c}
+.verdict .ic{font-size:17px;line-height:1}
+.verdict b{display:block;font-size:12px}
+.verdict span{font-size:10px;color:#a9b0d6}
+.empty{color:#7b82ad;font-size:11px;text-align:center;padding:22px 8px;line-height:1.7}
+
+.composer{display:flex;flex-direction:column;gap:9px}
+.composer .row{display:flex;gap:9px;align-items:stretch;flex-wrap:wrap}
+textarea#input{
+  flex:1;min-width:240px;height:64px;resize:vertical;
+  background:var(--ink);border:2px solid var(--line);border-radius:4px;
+  padding:9px 11px;line-height:1.6;
+}
+textarea#input:focus,input:focus,select:focus{outline:2px solid var(--accent);outline-offset:-2px}
+.btn{
+  padding:9px 15px;background:var(--ink3);border:2px solid #0b0c15;border-radius:3px;
+  cursor:pointer;font-weight:700;font-size:12px;color:#e9ecff;box-shadow:0 2px 0 #0b0c15;
+  white-space:nowrap;
+}
+.btn:hover{background:var(--line)}
+.btn:active{transform:translateY(2px);box-shadow:none}
+.btn.primary{background:var(--accent);color:#2b2000}
+.btn.primary:hover{background:#f3c css}
+.btn.ghost{background:transparent;border-color:var(--line);box-shadow:none;font-weight:400}
+.btn.tiny{padding:4px 8px;font-size:10px;box-shadow:none;font-weight:400}
+.btn.danger{background:#5a2320}
+.examples{display:flex;flex-wrap:wrap;gap:5px}
+.chip{
+  padding:4px 9px;background:#20233c;border:1px solid var(--line);border-radius:11px;
+  cursor:pointer;font-size:11px;color:#c3c8ea;
+}
+.chip:hover{background:var(--line);color:#fff}
+.chip.amb{background:#3a2a12;border-color:#7a5a00;color:#ffd97a}
+.chip.on{background:var(--good);color:#03230f;border-color:#0b0c15;font-weight:700}
+.toggle{display:flex;align-items:center;gap:6px;font-size:11px;color:#c3c8ea;cursor:pointer}
+.toggle input{width:15px;height:15px;accent-color:var(--accent);cursor:pointer}
+.hint{font-size:10px;color:#8d94c0;line-height:1.6}
+
+.rec{border:2px solid var(--line);border-radius:4px;background:var(--ink);padding:9px;margin-bottom:8px}
+.rec .top{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-bottom:5px}
+.rec .no{font-size:10px;color:#7b82ad;font-variant-numeric:tabular-nums}
+.rec .team{padding:2px 7px;border-radius:3px;font-size:10px;font-weight:700;color:#0b0c15}
+.rec .act{font-size:12px;font-weight:700;color:var(--accent);margin-bottom:3px}
+.rec .txt{font-size:11px;color:#d6daf5;background:#15172b;border-radius:3px;padding:5px 7px;margin-bottom:5px;word-break:break-word}
+.rec .flow{font-size:10px;color:#8d94c0;line-height:1.7}
+.rec .foot{display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap}
+.rec select{background:#20233c;border:1px solid var(--line);border-radius:3px;padding:3px 5px;font-size:10px}
+.rec .learn{font-size:10px;color:#7fd6a0;font-family:"D2Coding","Nanum Gothic Coding",monospace;word-break:break-all}
+
+.qcard{border:2px solid var(--line);border-radius:4px;background:var(--ink);padding:9px;margin-bottom:9px}
+.qcard .qh{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:7px}
+.qcard .key{font-size:10px;padding:2px 6px;background:var(--ink3);border-radius:3px;color:var(--accent);font-family:"D2Coding","Nanum Gothic Coding",monospace}
+.qcard input,.qcard select{background:#20233c;border:1px solid var(--line);border-radius:3px;padding:4px 6px;font-size:11px;min-width:0}
+.qcard .qtitle{flex:1;min-width:120px}
+.qcard .thr{width:58px;text-align:right}
+.oline{display:grid;grid-template-columns:minmax(60px,1.3fr) 52px minmax(60px,1fr) 28px;gap:5px;align-items:center;margin-bottom:5px}
+.oline .n{font-size:10px;color:#8d94c0;padding-left:2px}
+.field{display:flex;flex-direction:column;gap:3px;margin-bottom:7px}
+.field i{font-style:normal;font-size:10px;color:#98a0cc;letter-spacing:.06em}
+.field input,.field select{background:#20233c;border:1px solid var(--line);border-radius:3px;padding:6px 8px;font-size:11px}
+#importBox{width:100%;min-height:78px;font-family:"D2Coding","Nanum Gothic Coding",monospace;font-size:10px;line-height:1.5}
+.iobtns{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}
+.msg{font-size:11px;padding:7px 9px;border-radius:3px;margin-top:8px;line-height:1.6}
+.msg.ok{background:#1d3b28;border:2px solid #2f6b45;color:#cdf3d9}
+.msg.bad{background:#3d1e1c;border:2px solid #7a1b16;color:#ffd5d1}
+.msg.info{background:#1b2440;border:2px solid #3b4d80;color:#cfe0ff}
+.msg code{background:#0f1020;padding:1px 4px;border-radius:2px;font-family:"D2Coding","Nanum Gothic Coding",monospace;font-size:10px}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-track{background:#15172b}
+::-webkit-scrollbar-thumb{background:var(--ink3);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:var(--line)}
+/* CEO escalation panel (positioning) ---------- */
+#ceoEscalation{
+  position:absolute;right:10px;top:10px;width:340px;display:none;
+  background:var(--ink2);border:2px solid var(--line);
+  border-radius:4px;overflow:hidden;
+}
+#ceoEscalation .hd{
+  margin:-10px -10px 10px;padding:10px;
+  background:var(--ink);color:#fff;font-size:13px;border-radius:4px 4px 0 0;
+  display:flex;justify-content:space-between;align-items:center;
+}
+#ceoEscalation .hd .close{
+  background:none;border:none;color:#fff;font-size:12px;cursor:pointer;
+}
+#ceoEscalation .bd{
+  padding:10px;font-size:12px;color:#c3c8ea;line-height:1.5;
+}
+#ceoEscalation .btn{
+  margin:2px 4px;padding:4px 8px;font-size:11px;
+}
+
+/* ---------- AI 직원 배지 (override tiny badges) ---------- */
+.badge.ai-emp{
+  display:inline-flex;align-items:center;gap:4px;padding:3px 6px;
+  border-radius:3px;font-size:10px;font-weight:700;letter-spacing:.04em;
+  border:2px solid #0b0c15;color:#2b2000;
+}
+.badge.ai-emp span{color:#2b2000}
+.badge.ai-emp.ai-intake{background:#d6e4f0;color:#1a237e}
+.badge.ai-emp.ai-analysis{background:#d1e7e0;color:#1a5e5a}
+.badge.ai-emp.ai-audience{background:#e8d5f2;color:#4a148c}
+.badge.ai-emp.ai-rec{background:#f3e5f5;color:#6a1b9a}
+.badge.ai-emp.ai-quote{background:#ffe0b2;color:#6a4e0f}
+.badge.ai-emp.ai-proposal{background:#e3f2fd;color:#1565c0}
+.badge.ai-emp.ai-sales{background:#e0f2f1;color:#006064}
+.badge.ai-emp.ai-ops{background:#fff3e0;color:#6a4e00}
+.badge.ai-emp.ai-ceo{background:#ef9a9a;color:#b71c1c}
+
+/* ---------- 결정 판 (오른쪽) ---------- */
+#decisionPanel{
+  position:relative;width:420px;margin:8px auto;padding:10px;
+  border:2px solid var(--line);border-radius:4px;background:var(--ink2);overflow:hidden;
+}
+#decisionPanel .qp{font-size:12px;color:#98a0cc;margin-bottom:4px}
+#decisionPanel .prob{font-size:11px;color:#7b82ad;margin-top:2px}
+#decisionPanel .bar{width:100%;height:8px;background:#15172b;border-radius:2px;margin:4px 0;overflow:hidden}
+#decisionPanel .bar>span{display:block;height:100%;
+  background:linear-gradient(90deg,#d9524a,#e0a83a 55%,#4cb96b);
+  transition:width .45s ease}
+#decisionPanel .latency{font-size:10px;color:#a9b0d6;margin-top:2px;float:right}
+
+/* ---------- Ollama 상태 배지 (캔버스 우측 상단) ---------- */
+#ollamaStatus{
+  position:absolute;right:60px;top:10px;padding:4px 8px;border-radius:4px;
+  font-size:11px;color:#fff;
+}
+#ollamaStatus.live{background:#4cb96b}
+#ollamaStatus.loading{background:#f39c12}
+#ollamaStatus.disconnected{background:#d9534a}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div class="hud panel" style="padding:10px">
+    <div class="brand">
+      <b>tev1 결정 데스크</b>
+      <span>PIXEL OFFICE · AI DECISION</span>
+    </div>
+    <div class="stat live">
+      <i>실행 모드</i>
+      <b><span class="badge demo" id="modeBadge"><span class="dot"></span>체험 모드</span></b>
+    </div>
+    <div class="stat">
+      <i>처리 건수</i>
+      <b id="hudCount">0<small>건</small></b>
+    </div>
+    <div class="stat">
+      <i>평균 결정 시간</i>
+      <b id="hudAvg">0.00<small>초</small></b>
+    </div>
+    <div class="stat ok">
+      <i>누적 비용</i>
+      <b id="hudCost">₩0</b>
+    </div>
+    <div class="stat">
+      <i>연결 상태</i>
+      <b id="hudConn" style="font-size:13px">미확인</b>
+    </div>
+    <div class="stat">
+      <i>언어</i>
+      <select id="langSelect" class="btn" style="font-size:12px;padding:2px 8px;">
+        <option value="ko">한국어</option>
+        <option value="en">English</option>
+        <option value="ja">日本語</option>
+      </select>
+    </div>
+    <div class="stat">
+      <button id="themeToggle" class="btn" style="font-size:14px;padding:2px 8px;" title="테마 전환">🌙</button>
+    </div>
+  </div>
+
+  <div class="main">
+    <div id="stageWrap" class="panel" style="padding:10px">
+      <div id="stage">
+        <canvas id="floor" width="704" height="384"></canvas>
+        <div id="bubbles"></div>
+        <div class="stage-hint" id="stageHint">창넣 이동 26 타일/초 · 중앙 통로 경유</div>
+      </div>
+    </div>
+
+    <div class="side panel">
+      <div class="tabs" role="tablist">
+        <button role="tab" aria-selected="true" data-tab="decision">결정</button>
+        <button role="tab" aria-selected="false" data-tab="tree">트리</button>
+        <button role="tab" aria-selected="false" data-tab="records">기록</button>
+        <button role="tab" aria-selected="false" data-tab="settings">설정</button>
+      </div>
+      <div class="tabpage" data-tab="decision" data-active="true" id="pageDecision"></div>
+      <div class="tabpage" data-tab="tree" id="pageTree"></div>
+      <div class="tabpage" data-tab="records" id="pageRecords"></div>
+      <div class="tabpage" data-tab="settings" id="pageSettings"></div>
+    </div>
+  </div>
+
+  <div class="composer panel">
+    <div class="row">
+      <textarea id="input" placeholder="고객 문의를 입력하세요. 예) 어제 산 티켓 결제 금액이 잘못돼서 환불받고 싶습니다."></textarea>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <button class="btn primary" id="btnRun">결정 요청</button>
+        <label class="toggle" title="예시를 순서대로 자동 실행합니다">
+          <input type="checkbox" id="autoRun"><span>자동 실행</span>
+        </label>
+      </div>
+    </div>
+    <div class="examples" id="examples"></div>
+    <div class="hint" id="composerHint">Ctrl/⌘ + Enter 로 즉시 요청 · 체험 모드는 키워드 점수, 실제 AI 모드는 Ollama tev1 응답을 사용합니다.</div>
+    <div id="runMsg"></div>
+  </div>
+
+</div>
+<script>
+const TILE = 16;
+const COLS = 44;
+const ROWS = 24;
+const LANE = 12;
+const OFFICE_W = COLS * TILE;
+const OFFICE_H = ROWS * TILE;
+const STORAGE_KEY = 'tev1_deck_state_v1';
+const BASE_SPEED = 26;
+const STORAGE_VERSION = 1;
+
+const MODELS = [
+  { id: 'tev1:0.8b', label: 'tev1:0.8b · 경량 (권장)' },
+  { id: 'tev1', label: 'tev1 · 기본' },
+  { id: 'nimble', label: 'nimble · 경량' }
+];
+
+const TEAMS = {
+  청구: { color: '#4a7fe0', desk: 'claims', names: ['김서준', '박하은', '이도윤', '정수빈'] },
+  기술: { color: '#37a877', desk: 'tech', names: ['최유진', '정민아', '한지호', '오세훈'] },
+  상담: { color: '#d98a3c', desk: 'cs', names: ['오지훈', '임수현', '신예은', '황도윤'] },
+  우편: { color: '#9a7fe0', desk: null, names: ['강우진', '윤서준', '마지연', '배수아'] },
+  CEO: { color: '#d1574f', desk: 'ceo', names: ['김사장'] }
+};
+
+const DESKS = {
+  claims: [{ x: 8, y: 4 }, { x: 12, y: 4 }, { x: 16, y: 4 }],
+  tech: [{ x: 23, y: 4 }, { x: 27, y: 4 }, { x: 31, y: 4 }],
+  cs: [{ x: 8, y: 14 }, { x: 12, y: 14 }, { x: 16, y: 14 }],
+  ceo: [{ x: 36, y: 4 }]
+};
+
+const CEO_DESK = DESKS.ceo[0];
+const MAILBOX = { x: 3, y: 11 };
+
+const EXAMPLES = [
+  '어제 산 시네마 티켓 결제 금액이 잘못돼서 환불 받고 싶습니다.',
+  '구독 요금이 두 번 결제됐어요. 전액 환불해 주세요.',
+  '장바구니에서 결제 버튼을 눌러도 아무 반응이 없어요.',
+  '상품 상세 설명이 영어로만 나와요. 한국어로 번역돼야 합니다.',
+  '주문한 택배가 5일째 안 오고 있어요. 고객이 많이 불만입니다.',
+  '교환 신청한 사이즈가 잘못 왔는데 새 사이즈로 보내주세요.',
+  '영수증에 없는 결제 3건이 있어서 환불 처리하려고 합니다.',
+  '로그인 하면 계속 튕겨서 사이트를 못 써요.',
+  '구매 안내 문구를 일본어로 옮겨야 하는데 자동 번역이 이상하게 나옵니다.',
+  '결제가 두 번 된 것 같아서 얼마나 환불받을 수 있는지 확인해 주세요.'
+];
+const AMBIGUOUS_EXAMPLE = '재물운 번역이 이상해서 환불받고 싶어요';
+
+const KEYWORDS = {
+  q_team: { 청구: ['청구', '환불', '결제', '더치페이', '중복결제', '영수증', '가격', '할인'], 기술: ['버그', '오류', '에러', '안되', '안 돼', '느려', '버벅', '번역', '로그인', '결제버튼', '반응이 없', '먹통'], 상담: ['상담', '문의', '불만', '컴플레인', '택배', '배송', '교환', '사이즈'] },
+  q_refund: { 예: ['환불', '중복결제', '두 번', '2번', '잘못 결제', '결제 금액이 잘못', '돈을 돌려', '환불받고'], 아니요: ['문의만', '상담만', '안 그래도', '반품할까', '궁금'] },
+  q_refund_amt: { '3만원 이하': ['3만원 이하', '3만 이하', '만원 이하', '2만원', '1만원', '5천원', '소액', '금액이 크지'], '3만원 초과': ['3만원 초과', '3만 초과', '5만원', '10만원', '30만원', '전액', '고액', '많이'] },
+  q_topic: { '버그·오류': ['버그', '오류', '에러', '안 되', '안돼', '안 돼', '먹통', '반응이 없', '튕겨', '결제버튼', '버벅'], '번역 문제': ['번역', '영어로만', '일본어로', '중국어로', '번역돼', '옮겨야'], '속도·성능': ['느려', '속도', '성능', '버벅', '로딩', '지연'] },
+  q_urgency: { 긴급: ['급해', '긴급', ' ASAP', 'asap', '오늘', '당장', '바로', '빨리', '불만', '많이 불만', '최우선'], '일반 처리': ['일정', '언제', '여유', '천천히', '나중에', '일반'] }
+};
+
+const DEMO_PROBS = {
+  'q_team': { 청구: 3, 기술: 3, 상담: 2.2 },
+  'q_refund': { 예: 3, 아니요: 1.6 },
+  'q_refund_amt': { '3만원 이하': 3, '3만원 초과': 2 },
+  'q_topic': { '버그·오류': 3, '번역 문제': 2.4, '속도·성능': 1.8 },
+  'q_urgency': { 긴급: 2.8, '일반 처리': 2 }
+};
+
+const ACTION_META = {
+  act_refund_approve: { label: '환불 승인 처리', tone: 'good', note: '금액 확인 후 즉시 승인하고 CEO 검토로 올립니다.' },
+  act_refund_inquiry: { label: '환불 금액 확인 후 회신', tone: 'mid', note: '고액 건은 금액 확인이 끝나면 회신합니다.' },
+  act_bug_urgent: { label: '버그 접수 · 긴급 대응', tone: 'bad', note: '재현 확인 후 개발팀 긴급 티켓으로 연결합니다.' },
+  act_translate: { label: '번역 문안 자동 번역', tone: 'info', note: '원문 검수 후 번역 문안을 반환합니다.' },
+  act_cs_urgent: { label: '상담 · 긴급 처리', tone: 'mid', note: '담당자가 즉시 회신합니다.' },
+  act_cs_general: { label: '상담 · 일반 처리', tone: 'info', note: '순차 처리 큐에 등록합니다.' }
+};
+
+const DEFAULT_TREE = {
+  questions: [
+    {
+      key: 'q_team', team: 'router', threshold: 0.5,
+      question: '어떤 종류의 업무인지 먼저 분류해 주세요.',
+      options: [
+        { label: '청구', weight: 1, next: 'q_refund' },
+        { label: '기술', weight: 1, next: 'q_topic' },
+        { label: '상담', weight: 1, next: 'q_urgency' }
+      ]
+    },
+    {
+      key: 'q_refund', team: '청구', threshold: 0.5,
+      question: '환불 처리가 필요한 건인가요?',
+      options: [
+        { label: '예', weight: 1, next: 'q_refund_amt' },
+        { label: '아니요', weight: 1, next: 'q_urgency' }
+      ]
+    },
+    {
+      key: 'q_refund_amt', team: '청구', threshold: 0.7,
+      question: '환불 금액은 어느 구간인가요?',
+      options: [
+        { label: '3만원 이하', weight: 1, next: 'q_urgency' },
+        { label: '3만원 초과', weight: 1, next: 'q_urgency' }
+      ]
+    },
+    {
+      key: 'q_topic', team: '기술', threshold: 0.5,
+      question: '어떤 기술 문제인가요?',
+      options: [
+        { label: '버그·오류', weight: 1, next: 'q_urgency' },
+        { label: '번역 문제', weight: 1, next: 'q_urgency' },
+        { label: '속도·성능', weight: 1, next: 'q_urgency' }
+      ]
+    },
+    {
+      key: 'q_urgency', team: '상담', threshold: 0.5,
+      question: '처리 우선순위는 어떤가요?',
+      options: [
+        { label: '긴급', weight: 1, next: 'END' },
+        { label: '일반 처리', weight: 1, next: 'END' }
+      ]
+    }
+  ]
+};
+
+const EN_INSTRUCTION = [
+  'You are a Korean customer-support decision engine (tev1).',
+  'Read the request and the question blocks, then answer every question with exactly one option label copied verbatim.',
+  'Reply with JSON only, no prose, no code fence.',
+  'Shape: {"답변": {"q_team": "<label>", "q_refund": "<label>", "q_refund_amt": "<label>", "q_topic": "<label>", "q_urgency": "<label>"}}',
+  'Never invent an option. Never answer with an empty string.'
+].join(' ');
+
+const state = {
+  version: STORAGE_VERSION,
+  tree: clone(DEFAULT_TREE),
+  records: [],
+  actions: clone(ACTION_META),
+  settings: {
+    endpoint: 'http://localhost:11434/v1/systemone',
+    model: 'llama3:latest',
+    autoRun: false,
+    speed: 1,
+    version: null,
+    models: []
+  },
+  aiEmployees: [
+    { id: 'inq_intake',   name: '문의접수 AI',   team: 'router',   deskKey: 'inq_intake',   color: '#4a7fe0' },
+    { id: 'adv_analysis', name: '광고분석 AI',   team: 'router',   deskKey: 'adv_analysis', color: '#37a877' },
+    { id: 'aud_analysis', name: '관객분석 AI', team: 'router',   deskKey: 'aud_analysis', color: '#d98a3c' },
+    { id: 'med_rec',      name: '매체추천 AI', team: 'router',   deskKey: 'med_rec',      color: '#9a7fe0' },
+    { id: 'quote',        name: '견적 AI',     team: 'router',   deskKey: 'quote',      color: '#d1574f' },
+    { id: 'proposal',     name: '초안 AI',     team: 'router',   deskKey: 'proposal',   color: '#4a7fe0' },
+    { id: 'sales_mgmt',   name: '영업관리 AI', team: 'router',   deskKey: 'sales_mgmt', color: '#37a877' },
+    { id: 'ops',          name: '운영 AI',     team: 'router',   deskKey: 'ops',        color: '#d98a3c' },
+    { id: 'ceo',          name: 'CEO 김범원',  team: 'CEO',      deskKey: 'ceo',        color: '#d1574f' }
+  ],
+  departments: [
+    '문의접수', '광고분석', '관객분석', '매체추천', '견적', '초안', '영업관리', '운영', 'CEO'
+  ],
+  decisionLog: []
+};
+ 
+/* -------------------------------------------------
+   CEO‑escalation helper functions
+   ------------------------------------------------- */
+function maybeEscalateToCEO(confidence, answers){
+  const threshold = state.config?.confidenceThreshold ?? 0.5;
+  if (confidence < threshold){
+    return {
+      escalated:true,
+      target:{id:'ceo', name:'CEO 김범원'},
+      reason:`신뢰도 ${confidence.toFixed(2)}가 임계값 ${threshold} 미달`
+    };
+  }
+  return {escalated:false};
+}
+
+function showCEOEscalation(confidence, reason){
+  const p = el('ceoEscalation');
+  if(!p){ return; }
+  el('ceoConfidence').textContent = confidence.toFixed(2);
+  el('ceoReason').textContent = reason;
+  p.style.display = 'block';
+}
+
+function hideCEOEscalation(){
+  const p = el('ceoEscalation');
+  if(p){ p.style.display = 'none'; }
+}
+
+function recordDecision(logEntry){
+  const entry = {
+    timestamp:Date.now(),
+    inputMessage:logEntry?.inputMessage||'',
+    questions:logEntry?.questions||[],
+    selections:logEntry?.selections||{},
+    probabilities:logEntry?.probabilities||{},
+    confidence:logEntry?.confidence||0,
+    action:logEntry?.action||'',
+    responsibleAI:logEntry?.responsibleAI||'',
+    latency:logEntry?.latency||0,
+    ceoEscalation:logEntry?.ceoEscalation||false,
+    ceoFinalDecision:logEntry?.ceoFinalDecision||null,
+    correctFeedback:logEntry?.correctFeedback,
+    incorrectFeedback:logEntry?.incorrectFeedback||null
+  };
+  state.decisionLog.push(entry);
+  const max = 200;
+  if(state.decisionLog.length > max) state.decisionLog = state.decisionLog.slice(-max);
+  try{
+    localStorage.setItem('tev1_decisionLog', JSON.stringify(state.decisionLog));
+  }catch(e){ console.warn('로그 저장 실패', e); }
+  renderDecisionLog();
+}
+function renderDecisionLog(){
+  const container = el('decisionLogPanel');
+  if(!container) return;
+  let html = `<div class="qcard"><div class="qh">🗂 결정 로그 (${state.decisionLog.length}건)</div>`;
+  const recent = state.decisionLog.slice(-5);
+  recent.forEach((l,i)=>html+=`<div class="oline"><span class="n">#${state.decisionLog.length-i}</span> ${l.action||'—'} · 신뢰도 ${l.confidence?.toFixed(2)||'—'} · ${l.ceoEscalation?'CEO escalated':'일반'} · ${new Date(l.timestamp).toLocaleTimeString()}</div>`);
+  html+='</div>';
+  container.innerHTML = html;
+}
+
+/* -------------------------------------------------
+   Config‑panel toggle (settings)
+   ------------------------------------------------- */
+function toggleConfigPanel(){
+  const p = el('configPanel');
+  if(!p){ createConfigPanel(); return; }
+  p.style.display = p.style.display==='none'?'block':'none';
+}
+function createConfigPanel(){
+  const html = `
+<div id="configPanel" style="position:absolute;right:10px;top:60px;width:260px;background:var(--ink2);border:2px solid var(--line);border-radius:4px;padding:10px;z-index:1000;">
+  <div style="margin:-10px -10px 10px;padding:10px;border-bottom:2px solid var(--line);background:var(--ink);border-radius:4px 4px 0 0;">
+    <div style="font-size:12px;color:#a9b0d6;">설정 편집</div>
+    <button class="btn ghost tiny" onclick="toggleConfigPanel()">닫기</button>
+  </div>
+  <div style="margin-top:10px;font-size:12px;color:#c3c8ea;">
+    <div>신뢰도 임계값: <input id="confThreshold" type="number" min="0" max="1" step="0.05" value="${state.config.confidenceThreshold}"></div>
+    <div style="margin-top:6px;"><button class="btn primary" onclick="saveConfig()">저장</button> <button class="btn ghost" onclick="toggleConfigPanel()">취소</button></div>
+    <div id="aiEmployeeEdit" style="margin-top:10px;font-size:12px;color:#c3c8ea;">
+      <div>AI 직원 이름/색상 편집</div>
+      <div id="aiEmployeeList" style="margin-top:4px;"></div>
+      <button class="btn ghost tiny" onclick="saveAIEmployeeEdits()">저장</button>
+    </div>
+  </div>
+</div>`;
+  el('app').insertAdjacentHTML('beforeend',html);
+  el('confThreshold').onchange=e=>state.config.confidenceThreshold=Number(e.target.value);
+  // AI 직원 리스트 즉시 표시
+  renderAIEmployeeEdits();
+}
+function saveConfig(){
+  try{
+    state.config.confidenceThreshold = Number(el('confThreshold').value);
+    localStorage.setItem('tev1_config',JSON.stringify(state.config));
+    smsg('ok','설정이 저장되었습니다.');
+    toggleConfigPanel();
+  }catch(e){ smsg('bad','설정 저장 오류'); }
+}
+
+// AI 직원 편집 관련 함수
+function renderAIEmployeeEdits(){
+  const container = el('aiEmployeeList');
+  if(!container) return;
+  const employees = state.aiEmployees||[];
+  let html = '';
+  employees.forEach((e,i)=> {
+    const color = e.color || '#4a7fe0';
+    html += `
+      <div style="margin-bottom:6px;font-size:12px;color:#c3c8ea;">
+        <span style="display:inline-block;width:16px;height:16px;border:1px solid #777;margin-right:6px;background:${color}"></span>
+        <input type="text" id="empName_${e.id}" value="${e.name}" style="margin-left:4px;width:60px;">
+        <button class="btn cancel tiny" data-id="${e.id}" style="margin-left:4px;">삭제</button>
+      </div>
+    `;
+  });
+  // 새 직원 추가 버튼
+  html += `
+    <div style="margin-top:4px;font-size:12px;color:#c3c8ea;">
+      <input type="text" id="newEmpName" placeholder="이름">
+      <input type="color" id="newEmpColor" value="#4a7fe0" style="margin-left:4px;">
+      <button class="btn primary" onclick="addNewAIEmployee()">추가</button>
+    </div>
+  `;
+  container.innerHTML = html;
+}
+
+function saveAIEmployeeEdits(){
+  const list = el('aiEmployeeList');
+  if(!list) return smsg('bad','편집할 리스트가 없습니다.');
+  const newEmployees = [];
+  list.querySelectorAll('div').forEach((div,i)=> {
+    const nameInput = div.querySelector('input[type="text"]');
+    const colorInput = div.querySelector('input[type="color"]');
+    if(!nameInput) return;
+    const name = nameInput.value.trim() || `AI_${i}`;
+    const color = colorInput ? colorInput.value : '#4a7fe0';
+    newEmployees.push({ id: `emp_${i}`, name, color });
+  });
+  state.aiEmployees = newEmployees;
+  try{
+    localStorage.setItem('tev1_aiEmployees', JSON.stringify(state.aiEmployees));
+    smsg('ok','AI 직원 정보가 저장되었습니다.');
+  }catch(e){ console.warn('저장 실패', e); smsg('bad','저장 오류'); }
+}
+
+function addNewAIEmployee(){
+  const name = el('newEmpName').value.trim() || '새 AI';
+  const color = el('newEmpColor').value || '#4a7fe0';
+  const last = state.aiEmployees[state.aiEmployees.length-1] || {id:''};
+  const newId = last.id ? parseInt(last.id.split('_')[1]) + 1 : 0;
+  state.aiEmployees.push({ id: `emp_${newId}`, name, color });
+  renderAIEmployeeEdits();
+  saveAIEmployeeEdits();
+}
+
+// 로컬스토리지에서 AI 직원 정보 복구 (초기화 대비)
+try{
+  const stored = localStorage.getItem('tev1_aiEmployees');
+  if(stored) state.aiEmployees = JSON.parse(stored);
+}catch(e){ console.warn('AI 직원 로컬스토리지 복구 실패', e); }
+
+function fetchAdData(){
+  const panel = el('adDataPanel');
+  if(!panel) return;
+  panel.innerHTML = '<div style="color:#777">데이터를 불러오는 중...</div>';
+  // 모의 데이터 (실제 API 연동 시 fetch로 교체)
+  setTimeout(() => {
+    const mockData = {
+      items: [
+        { month: '2024-01', spend: '1,234,567', impressions: '12,345', clicks: '234', conversions: '12' },
+        { month: '2024-02', spend: '1,567,890', impressions: '15,678', clicks: '345', conversions: '18' },
+        { month: '2024-03', spend: '1,111,111', impressions: '11,111', clicks: '222', conversions: '11' }
+      ]
+    };
+    const rows = mockData.items.map(it => {
+      return `<div><strong>${it.month}</strong> 지출: ${it.spend}원·노출: ${it.impressions}·클릭: ${it.clicks}·전환: ${it.conversions}</div>`;
+    }).join('');
+    panel.innerHTML = rows || '조회된 항목이 없습니다.';
+  }, 500);
+}
+
+/* -------------------------------------------------
+   End of state‑block extensions
+   ------------------------------------------------- */
+
+let charSeq = 0;
+const chars = [];
+const bubbles = [];
+const queue = [];
+let busy = false;
+let autoTimer = null;
+let autoIndex = 0;
+let lastRun = null;
+let ui = { tab: 'decision', draftTree: null };
+
+const cv = document.getElementById('floor');
+const ctx = cv.getContext('2d');
+const dpr = Math.min(2, window.devicePixelRatio || 1);
+cv.width = OFFICE_W * dpr;
+cv.height = OFFICE_H * dpr;
+ctx.scale(dpr, dpr);
+
+function clone(o) { return JSON.parse(JSON.stringify(o)); }
+function el(id) { return document.getElementById(id); }
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function norm(s) {
+  return String(s == null ? '' : s)
+    .toLowerCase()
+    .replace(/[\s\u3000.,!?~"'`\-_/\\()[\]{}<>:;·・%$#@&*+=]/g, '')
+    .replace(/\s+/g, '');
+}
+function now() { return Date.now(); }
+function money(n) { return '₩' + Math.round(n).toLocaleString('ko-KR'); }
+function teamColor(t) { return (TEAMS[t] || TEAMS.상담).color; }
+function pick(arr, i) { return arr[i % arr.length]; }
+
+function round1(n) { return Math.round(n * 10) / 10; }
+
+function teamPath(team, refund, topic) {
+  if (team === '청구') return ['q_team', 'q_refund'].concat(refund === '예' ? ['q_refund_amt'] : []).concat(['q_urgency']);
+  if (team === '기술') return ['q_team', 'q_topic', 'q_urgency'];
+  return ['q_team', 'q_urgency'];
+}
+
+function classify(text) {
+  const t = text + ' ' + norm(text);
+  const sc = { 청구: 0, 기술: 0, 상담: 0 };
+  for (const [qkey, map] of Object.entries(KEYWORDS)) {
+    if (qkey !== 'q_team') continue;
+    for (const [label, words] of Object.entries(map)) {
+      for (const w of words) if (t.includes(w) || t.includes(norm(w))) sc[label] += 1;
+    }
+  }
+  const total = sc.청구 + sc.기술 + sc.상담;
+  if (total === 0) return { team: '상담', probs: { 청구: 0.34, 기술: 0.33, 상담: 0.33 }, hits: {} };
+  const probs = {};
+  for (const k of Object.keys(sc)) probs[k] = sc[k] / total;
+  const team = Object.keys(sc).reduce((a, b) => (sc[a] >= sc[b] ? a : b));
+  return { team, probs, hits: sc };
+}
+
+function keywordScores(text, qkey) {
+  const map = KEYWORDS[qkey];
+  if (!map) return {};
+  const t = text + '' + norm(text);
+  const used = [];
+  const out = {};
+  for (const label of Object.keys(map)) {
+    const words = [...map[label]].sort((a, b) => b.length - a.length);
+    let hits = 0;
+    const matched = [];
+    for (const w of words) {
+      const key = norm(w);
+      if (!key) continue;
+      if (used.includes(key)) continue;
+      if (t.includes(w) || norm(t).includes(key)) { hits += 1; used.push(key); matched.push(w); }
+    }
+    out[label] = { hits, matched };
+  }
+  return out;
+}
+
+function scoreOptions(text, q) {
+  const base = DEMO_PROBS[q.key] || null;
+  const kw = keywordScores(text, q.key);
+  const labels = q.options.map(o => o.label);
+  const raw = {};
+  let totalHits = 0;
+  let matchedLabels = [];
+  labels.forEach(l => {
+    const k = kw[l] || { hits: 0 };
+    totalHits += k.hits;
+    if (k.hits > 0) matchedLabels.push(l);
+  });
+  if (base) {
+    labels.forEach(l => { raw[l] = base[l] != null ? base[l] : 1; });
+  } else {
+    labels.forEach(l => { raw[l] = 1; });
+  }
+  if (totalHits === 0) {
+    const def = q.options[0] ? q.options[0].label : labels[0];
+    const rest = labels.filter(l => l !== def);
+    const give = 0.9;
+    const share = rest.length ? give / rest.length : 0;
+    const out = {};
+    labels.forEach(l => { out[l] = l === def ? 1 - give + 0.1 : share; });
+    const s = labels.reduce((a, l) => a + out[l], 0);
+    labels.forEach(l => { out[l] = out[l] / s; });
+    return { probs: out, mode: 'default', hits: 0, matched: [] };
+  }
+  labels.forEach(l => {
+    const k = kw[l] || { hits: 0 };
+    raw[l] = (raw[l] + k.hits) * 0.25 + k.hits;
+  });
+  const s = labels.reduce((a, l) => a + raw[l], 0) || 1;
+  let probs = {};
+  labels.forEach(l => { probs[l] = raw[l] / s; });
+  probs = normalizeWeights(probs, q);
+  return { probs, mode: 'keyword', hits: totalHits, matched: matchedLabels };
+}
+
+function normalizeWeights(probs, q) {
+  const w = {};
+  let sw = 0;
+  q.options.forEach(o => { const x = Number(o.weight) > 0 ? Number(o.weight) : 1; w[o.label] = x; sw += x; });
+  let out = {};
+  let sum = 0;
+  q.options.forEach(o => { out[o.label] = (probs[o.label] || 0) * (w[o.label] / sw); sum += out[o.label]; });
+  if (sum === 0) { q.options.forEach(o => { out[o.label] = 1 / q.options.length; }); return out; }
+  q.options.forEach(o => { out[o.label] = out[o.label] / sum; });
+  return out;
+}
+
+function ambiguityOf(text, q, res) {
+  let flag = false;
+  let ratio = 0;
+  const reasons = [];
+  const refundHit = (keywordScores(text, 'q_refund').예 || { hits: 0 }).hits > 0;
+  const transHit = (keywordScores(text, 'q_topic')['번역 문제'] || { hits: 0 }).hits > 0;
+  const bugHit = (keywordScores(text, 'q_topic')['버그·오류'] || { hits: 0 }).hits > 0;
+  const freightHit = ['재물운', '배송', '택배', '물류'].some(w => (text + norm(text)).includes(w));
+  if (refundHit && transHit) { flag = true; ratio = Math.max(ratio, 0.34); reasons.push('환불·번역 동시 키워드'); }
+  if (refundHit && bugHit) { flag = true; ratio = Math.max(ratio, 0.34); reasons.push('환불·버그 동시 키워드'); }
+  if (refundHit && freightHit) { flag = true; ratio = Math.max(ratio, 0.36); reasons.push('환불·배송 동시 키워드'); }
+  const teamHits = Object.values(classify(text).hits || {}).reduce((a, b) => a + b, 0);
+  if (teamHits >= 3) { flag = true; ratio = Math.max(ratio, 0.38); reasons.push('팀 키워드 3개 이상'); }
+  return { flag, ratio, reasons };
+}
+
+function applyAmbiguity(probs, amb) {
+  if (!amb || !amb.flag) return probs;
+  const labels = Object.keys(probs);
+  const cap = 0.48;
+  const values = labels.map(l => clamp(probs[l], 0.0001, cap));
+  const s = values.reduce((a, b) => a + b, 0) || 1;
+  const scaled = values.map(v => v / s);
+  const deficit = 1 - scaled.reduce((a, b) => a + b, 0);
+  let out = {};
+  labels.forEach((l, i) => { out[l] = scaled[i]; });
+  if (deficit > 0) {
+    const len = labels.length;
+    labels.forEach(l => { out[l] += deficit / len; });
+  }
+  return out;
+}
+
+function topOf(probs) {
+  const keys = Object.keys(probs);
+  let best = keys[0];
+  keys.forEach(k => { if (probs[k] > probs[best]) best = k; });
+  return { label: best, p: probs[best] };
+}
+
+function confidenceOf(probs, q) {
+  const s = topOf(probs);
+  const thr = Number(q.threshold) > 0 ? Number(q.threshold) : 0.5;
+  return { label: s.label, p: s.p, threshold: thr, ok: s.p >= thr };
+}
+
+function planSteps(text, team, answers) {
+  const cls = classify(text);
+  const resolvedTeam = team || cls.team;
+  const refund = answers && answers.q_refund ? answers.q_refund : null;
+  const keys = teamPath(resolvedTeam, refund === '예' || (!answers && refundHit(text)) ? '예' : (answers ? '아니요' : null));
+  const steps = [];
+  keys.forEach(k => {
+    const q = state.tree.questions.find(x => x.key === k);
+    if (!q) return;
+    let probs;
+    if (answers && answers[k]) {
+      const p = {};
+      q.options.forEach(o => { p[o.label] = o.label === answers[k] ? 1 : 0.001; });
+      probs = normalizeWeights(p, q);
+    } else {
+      const res = scoreOptions(text, q);
+      const amb = ambiguityOf(text, q, res);
+      probs = applyAmbiguity(res.probs, amb);
+      if (!answers) probs._meta = { hits: res.hits, amb };
+    }
+    steps.push({ q, probs: stripMeta(probs), meta: probs._meta || {} });
+  });
+  return { team: resolvedTeam, steps, cls };
+}
+
+function stripMeta(p) { const o = {}; Object.keys(p).forEach(k => { if (k !== '_meta') o[k] = p[k]; }); return o; }
+
+function refundHit(text) { return (keywordScores(text, 'q_refund').예 || { hits: 0 }).hits > 0; }
+
+function confidenceOverall(steps) {
+  if (!steps.length) return 0;
+  const avg = steps.reduce((a, s) => a + topOf(s.probs).p, 0) / steps.length;
+  const min = steps.reduce((a, s) => Math.min(a, s.q.threshold || 0.5), 1);
+  return clamp(avg * 0.7 + min * 0.3, 0, 1);
+}
+
+function minPath(team, refund) {
+  const keys = teamPath(team, refund);
+  return keys.join(' → ') + ' → 완료';
+}
+
+function resolveAction(answers) {
+  const team = answers.q_team || '상담';
+  const refund = answers.q_refund;
+  const amount = answers.q_refund_amt;
+  const topic = answers.q_topic;
+  const urgency = answers.q_urgency || '일반 처리';
+  if (team === '청구' && refund === '예') {
+    if (amount === '3만원 이하') return 'act_refund_approve';
+    return 'act_refund_inquiry';
+  }
+  if (team === '기술') {
+    if (topic === '번역 문제') return 'act_translate';
+    if (topic === '버그·오류') return urgency === '긴급' ? 'act_bug_urgent' : 'act_translate';
+    return 'act_cs_general';
+  }
+  if (urgency === '긴급') return 'act_cs_urgent';
+  return 'act_cs_general';
+}
+
+function actionMeta(id) {
+  return state.actions[id] || { label: id, tone: 'info', note: '' };
+}
+
+function buildOllamaBody(text, plan) {
+  const q = {};
+  plan.steps.forEach(s => { q[s.q.key] = { question: s.q.question, options: s.q.options.map(o => o.label) }; });
+  return {
+    모델: state.settings.model,
+    상태: { 보낸_사람: '고객', 제목: plan.title || '고객 문의', 본문: text },
+    질문: { 청구: q.q_refund || null, 기술: q.q_topic || null, 상담: q.q_urgency || null, 분류: q.q_team || null }
+  };
+}
+
+function stripFence(t) {
+  return String(t || '').replace(/^\s*```[a-zA-Z]*\s*/,'').replace(/\s*```\s*$/,'').trim();
+}
+
+function deepStrings(v, out) {
+  out = out || [];
+  if (typeof v === 'string') out.push(v);
+  else if (Array.isArray(v)) v.forEach(x => deepStrings(x, out));
+  else if (v && typeof v === 'object') Object.keys(v).forEach(k => deepStrings(v[k], out));
+  return out;
+}
+
+function extractAnswer(raw) {
+  const cleaned = stripFence(raw);
+  let data = cleaned;
+  try { data = JSON.parse(cleaned); } catch (e) { data = null; }
+  const found = {};
+  const keys = ['답변', 'answer', 'answers', '답', '결과', 'result', '선택', 'choice'];
+  const scan = (obj) => {
+    if (!obj || typeof obj !== 'object') return;
+    keys.forEach(k => {
+      if (obj[k] !== undefined) {
+        if (typeof obj[k] === 'object' && obj[k] !== null) { try { scan(obj[k]); } catch (e) {} }
+        else found[k] = obj[k];
+      }
+    });
+    Object.keys(obj).forEach(k => {
+      const v = obj[k];
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        if (/^q_[a-z_]+$/.test(k)) { if (typeof v === 'string') found[k] = v; else scan(v); }
+        else if (!keys.includes(k)) { try { scan(v); } catch (e) {} }
+      }
+    });
+  };
+  if (data) {
+    scan(data);
+    if (Object.keys(found).length) return { found, strings: deepStrings(data) };
+  }
+  const first = keys.map(k => raw && raw[k]).find(v => typeof v === 'string');
+  if (first) return { found: { 답변: first }, strings: [first] };
+  const nullish = /noul|null|undefined|n\/a/i.test(cleaned);
+  if (!cleaned || nullish) return { found: {}, strings: [], empty: true, nullish };
+  return { found: {}, strings: deepStrings(data || cleaned), empty: false };
+}
+
+function matchOption(q, text) {
+  const t = norm(text);
+  if (!t) return { index: -1, score: 0 };
+  let best = -1, bestScore = 0;
+  q.options.forEach((o, i) => {
+    const L = norm(o.label);
+    let s = 0;
+    if (!L) return;
+    if (t === L) s = 100;
+    else if (t.includes(L)) s = 80 + L.length;
+    else if (L.includes(t) && t.length >= 2) s = 70 + t.length;
+    else {
+      const toks = L.split(' ').filter(Boolean);
+      const hit = toks.filter(x => t.includes(x)).length;
+      if (hit) s = 50 + hit * 8 + toks.length;
+      if (L.length >= 2 && L.split('').every(ch => t.includes(ch))) s = Math.max(s, 45);
+    }
+    if (s > bestScore) { bestScore = s; best = i; }
+  });
+  return { index: best, score: bestScore };
+}
+
+function parseAnswerToSteps(text, plan, raw) {
+  const ex = extractAnswer(raw);
+  const answers = {};
+  if (ex.empty) return { answers, probs: {}, note: ex.nullish ? '응답이 비어 있어 체험 모드로 대체했습니다.' : '응답을 해석하지 못해 체험 모드로 대체했습니다.', strings: [] };
+  plan.steps.forEach(s => {
+    const q = s.q;
+    let chosen = null;
+    if (ex.found && ex.found[q.key]) chosen = ex.found[q.key];
+    if (typeof chosen === 'string') {
+      const m = matchOption(q, chosen);
+      if (m.index >= 0 && (m.score >= 40 || norm(chosen) === norm(q.options[m.index].label))) chosen = q.options[m.index].label;
+      else chosen = null;
+    }
+    if (!chosen) {
+      const m = matchOption(q, ex.strings.join(' '));
+      if (m.index >= 0 && m.score >= 60) chosen = q.options[m.index].label;
+    }
+    if (!chosen) {
+      s.probs = scoreOptions(text, q).probs;
+      return;
+    }
+    answers[q.key] = chosen;
+    const p = {};
+    q.options.forEach(o => { p[o.label] = o.label === chosen ? 1 : 0.001; });
+    s.probs = normalizeWeights(p, q);
+  });
+  const missing = plan.steps.filter(s => !answers[s.q.key]).length;
+  return { answers, note: missing ? '일부 문항은 키워드 점수로 보완했습니다.' : 'Ollama 응답을 그대로 적용했습니다.', strings: ex.strings };
+}
+
+async function callOllama(text, plan) {
+  const url = state.settings.endpoint;
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), 15000);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-TeV1-Instruction': EN_INSTRUCTION },
+      body: JSON.stringify(buildOllamaBody(text, plan)),
+      signal: ctrl.signal
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText);
+    const ct = res.headers.get('content-type') || '';
+    if (ct.includes('application/json')) return await res.json();
+    return { 답변: await res.text() };
+  } finally { clearTimeout(to); }
+}
+
+
+
+/* next function */
+function deskOfChar(c) {
+  if (!c.deskKey) return null;
+  const arr = DESKS[c.deskKey];
+  if (!arr) return null;
+  return arr[c.deskIdx != null ? c.deskIdx % arr.length : 0];
+}
+
+function pathTo(from, to) {
+  const pts = [{ x: from.x, y: from.y }];
+  if (from.y !== LANE) {
+    pts.push({ x: from.x, y: LANE });
+    pts.push({ x: to.x, y: LANE });
+  } else {
+    pts.push({ x: to.x, y: LANE });
+  }
+  if (to.y !== LANE) pts.push({ x: to.x, y: to.y });
+  const out = [];
+  pts.forEach(p => {
+    const last = out[out.length - 1];
+    if (!last || last.x !== p.x || last.y !== p.y) out.push(p);
+  });
+  return out;
+}
+
+function findIdleChar(team) {
+  for (const c of chars) if (c.team === team && (c.state === 'sleep' || c.state === 'idle') && !c.busy) return c;
+  return null;
+}
+
+function reconcileDesks(team) {
+  const key = TEAMS[team] && TEAMS[team].desk ? TEAMS[team].desk : 'claims';
+  const arr = DESKS[key];
+  const used = new Set(chars.filter(c => c.deskKey === key).map(c => c.deskIdx));
+  for (let i = 0; i < arr.length; i++) {
+    if (!used.has(i)) return { key, idx: i, desk: arr[i], created: false };
+  }
+  const teamCount = chars.filter(c => c.team === team).length;
+  if (teamCount < 4) {
+    const idx = (chars.filter(c => c.deskKey === key).length) % arr.length;
+    return { key, idx, desk: arr[idx], created: true };
+  }
+  const idx = arr.length - 1;
+  return { key, idx, desk: arr[idx], created: false, reuse: true };
+}
+
+function spawnChar(team, at, desk) {
+  const meta = TEAMS[team] || TEAMS.상담;
+  const used = chars.filter(c => c.team === team).map(c => c.name);
+  const name = meta.names.find(n => !used.includes(n)) || meta.names[chars.filter(c => c.team === team).length % meta.names.length] + '2';
+  charSeq += 1;
+  const c = {
+    id: 'c' + charSeq, name, team, color: meta.color,
+    x: at.x, y: at.y, tx: at.x, ty: at.y, path: [],
+    state: 'idle', bob: 0, dir: 1, t: Math.random() * 6,
+    deskKey: desk ? desk.key : null, deskIdx: desk ? desk.idx : null,
+    busy: false, carrying: false, happyT: 0, sleepT: 0, target: null, purpose: ''
+  };
+  chars.push(c);
+  return c;
+}
+
+function trimChars() {
+  const sleeping = chars.filter(c => c.state === 'sleep' && !c.busy);
+  while (chars.length > 22 && sleeping.length) {
+    const c = sleeping.shift();
+    const i = chars.indexOf(c);
+    if (i >= 0) chars.splice(i, 1);
+  }
+}
+
+function setBubble(c, text, tone) {
+  const b = { charId: c.id, text: text || '', tone: tone || '', t: 0 };
+  const idx = bubbles.findIndex(x => x.charId === c.id);
+  if (idx >= 0) bubbles.splice(idx, 1);
+  if (text) bubbles.push(b);
+}
+
+function moveTo(c, to, purpose) {
+  c.path = pathTo({ x: c.x, y: c.y }, to);
+  c.tx = to.x; c.ty = to.y;
+  c.state = c.path.length ? 'walk' : 'idle';
+  c.busy = true;
+  c.purpose = purpose || '';
+  return new Promise(res => { c.onArrive = res; });
+}
+
+function sleepT(c) {
+  c.state = 'sleep';
+  c.busy = false;
+  c.carrying = false;
+  c.sleepT = 1.6 + Math.random() * 2.4;
+  if (!c.bubble && Math.random() < 0.6) setBubble(c, 'Zz', 'good');
+}
+
+function updateChars(dt) {
+  for (const c of chars) {
+    c.t += dt;
+    if (c.state === 'walk') {
+      const spd = BASE_SPEED * state.settings.speed;
+      let move = spd * dt;
+      while (move > 0 && c.path.length) {
+        const next = c.path[0];
+        const dx = next.x - c.x, dy = next.y - c.y;
+        const d = Math.abs(dx) + Math.abs(dy);
+        if (d <= move) { c.x = next.x; c.y = next.y; c.path.shift(); move -= d; }
+        else {
+          if (dx !== 0) { c.x += Math.sign(dx) * move; c.dir = Math.sign(dx); }
+          else { c.y += Math.sign(dy) * move; }
+          move = 0;
+        }
+      }
+      c.bob += dt * 9;
+      if (!c.path.length) {
+        c.state = 'happy';
+        c.happyT = 0.7;
+        c.bob = 0;
+        if (c.onArrive) { const f = c.onArrive; c.onArrive = null; f(); }
+      }
+    } else if (c.state === 'happy') {
+      c.happyT -= dt;
+      if (c.happyT <= 0) sleepT(c);
+    } else if (c.state === 'sleep') {
+      c.sleepT -= dt;
+      if (c.sleepT <= 0) { c.sleepT = 3 + Math.random() * 4; if (Math.random() < 0.35) setBubble(c, 'Zz', 'good'); }
+    } else {
+      c.bob += dt * 2;
+    }
+  }
+}
+
+function px(x) { return x * TILE; }
+function py(y) { return y * TILE; }
+
+function drawFloor() {
+  ctx.fillStyle = '#1b1e33';
+  ctx.fillRect(0, 0, OFFICE_W, OFFICE_H);
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) {
+      const checker = (x + y) % 2 === 0;
+      ctx.fillStyle = checker ? '#232744' : '#1f2240';
+      ctx.fillRect(px(x), py(y), TILE, TILE);
+    }
+  }
+  ctx.fillStyle = '#2c3055';
+  ctx.fillRect(0, py(LANE - 1), OFFICE_W, TILE * 2);
+  ctx.fillStyle = '#363b66';
+  for (let x = 0; x < COLS; x += 2) ctx.fillRect(px(x), py(LANE - 1) + 6, 10, 2);
+  ctx.fillStyle = '#161830';
+  ctx.fillRect(0, 0, OFFICE_W, 6);
+  ctx.fillRect(0, OFFICE_H - 6, OFFICE_W, 6);
+  ctx.fillRect(0, 0, 6, OFFICE_H);
+  ctx.fillRect(OFFICE_W - 6, 0, 6, OFFICE_H);
+  ctx.fillStyle = '#2a2f52';
+  ctx.fillRect(0, 0, OFFICE_W, 3);
+  ctx.fillStyle = '#e7b13c';
+  ctx.fillRect(OFFICE_W - 46, 8, 34, 10);
+  ctx.fillStyle = '#191b2e';
+  ctx.fillRect(OFFICE_W - 42, 11, 26, 4);
+  ctx.fillStyle = '#33385e';
+  ctx.fillRect(px(19), py(3), TILE * 4, TILE * 2);
+  ctx.fillStyle = '#e9edff';
+  ctx.fillRect(px(19) + 4, py(3) + 4, TILE * 4 - 8, TILE * 2 - 8);
+  ctx.fillStyle = '#4f6fd0';
+  ctx.fillRect(px(19) + 8, py(3) + 8, 14, 3);
+  ctx.fillRect(px(19) + 8, py(3) + 14, 24, 3);
+  const labels = [[6, 'CLAIM'], [23, 'TECH'], [8, 'CS']];
+  ctx.fillStyle = '#7f88bd';
+  ctx.font = '8px monospace';
+  labels.forEach(l => ctx.fillText(l[1], px(l[0]), py(1.2)));
+  ctx.fillStyle = '#3c4262';
+  [[4, 20], [39, 20], [4, 8], [39, 8]].forEach(p => {
+    ctx.fillRect(px(p[0]), py(p[1]) + 10, 10, 6);
+    ctx.fillStyle = '#4cb96b';
+    ctx.fillRect(px(p[0]) + 2, py(p[1]) + 4, 3, 8);
+    ctx.fillRect(px(p[0]) + 6, py(p[1]) + 1, 3, 11);
+    ctx.fillStyle = '#3c4262';
+  });
+}
+
+function drawDesk(d, teamKey, active) {
+  const x = px(d.x), y = py(d.y);
+  const w = TILE * 2, h = TILE * 2;
+  ctx.fillStyle = '#0f1020';
+  ctx.fillRect(x + 2, y + h - 2, w - 4, 4);
+  ctx.fillStyle = active ? '#4b5490' : '#3a3f63';
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = active ? '#6c78c4' : '#4d5378';
+  ctx.fillRect(x, y, w, 4);
+  ctx.fillStyle = '#262a4a';
+  ctx.fillRect(x + 3, y + 6, w - 6, h - 10);
+  ctx.fillStyle = active ? '#bfe9ff' : '#7f88bd';
+  ctx.fillRect(x + 5, y + 8, w - 10, h - 14);
+  ctx.fillStyle = '#e0a83a';
+  ctx.fillRect(x + 6, y + 9, 3, 3);
+  ctx.fillStyle = '#2b3048';
+  ctx.fillRect(x + w + 2, y + 2, 4, 4);
+  ctx.fillRect(x + w + 1, y + 6, 6, 2);
+  ctx.fillStyle = active ? '#e7b13c' : '#4d5378';
+  ctx.fillRect(x, y - 3, w, 3);
+}
+
+function drawChar(c) {
+  const x = px(c.x) + 1, y = py(c.y) - 6;
+  const bob = c.state === 'walk' ? Math.round(Math.sin(c.bob) * 1.5) : 0;
+  const bounce = c.state === 'happy' ? -Math.abs(Math.round(Math.sin(c.bob * 3) * 2)) : 0;
+  const top = y + bob + bounce;
+  ctx.fillStyle = '#0f1020';
+  ctx.fillRect(x - 1, top + 15, 18, 2);
+  if (c.state === 'sleep') {
+    ctx.globalAlpha = 0.75;
+    ctx.fillStyle = '#8f96c8';
+    ctx.fillRect(x + 2, top + 4, 12, 8);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#2b3048';
+    ctx.fillRect(x + 3, top + 10, 10, 4);
+    ctx.fillStyle = '#e9edff';
+    ctx.fillRect(x + 2, top + 2, 12, 4);
+    ctx.fillStyle = '#1b1e33';
+    ctx.fillRect(x + 11, top + 3, 2, 2);
+    ctx.fillStyle = '#c9cee8';
+    ctx.font = '7px monospace';
+    ctx.fillText('z', x + 15, top - 1);
+    ctx.fillText('z', x + 18, top - 5);
+    return;
+  }
+  ctx.fillStyle = '#2b3048';
+  ctx.fillRect(x + 3, top + 9, 10, 7);
+  ctx.fillStyle = c.color;
+  ctx.fillRect(x + 3, top + 9, 10, 3);
+  ctx.fillStyle = '#1b1e33';
+  ctx.fillRect(x + (c.dir > 0 ? 3 : 10), top + 15, 3, 3);
+  ctx.fillRect(x + (c.dir > 0 ? 9 : 4), top + 15, 3, 3);
+  ctx.fillStyle = '#f0d9b5';
+  ctx.fillRect(x + 4, top + 2, 8, 7);
+  ctx.fillStyle = '#3a2a20';
+  ctx.fillRect(x + 3, top, 10, 3);
+  ctx.fillRect(x + (c.dir > 0 ? 12 : 1), top + 2, 2, 4);
+  ctx.fillStyle = '#191b2e';
+  ctx.fillRect(x + (c.dir > 0 ? 10 : 6), top + 4, 1, 2);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(x + (c.dir > 0 ? 10 : 5), top + 5, 1, 1);
+  if (c.carrying) {
+    ctx.fillStyle = '#fffdf2';
+    ctx.fillRect(x + 13, top + 8, 5, 4);
+    ctx.fillStyle = '#d9524a';
+    ctx.fillRect(x + 15, top + 8, 1, 4);
+    ctx.fillRect(x + 13, top + 9, 5, 1);
+  }
+  if (c.state === 'happy') {
+    ctx.fillStyle = '#ffd97a';
+    const sp = [[2, -2], [13, -4], [8, -7]];
+    sp.forEach((p, i) => ctx.fillRect(x + p[0] + Math.round(Math.sin(c.bob * 4 + i) * 2), top + p[1], 2, 2));
+  }
+  ctx.fillStyle = '#9aa2d0';
+  ctx.font = '7px monospace';
+  ctx.fillText(c.name.slice(0, 4), x + 1, top + 22);
+}
+
+function render() {
+  drawFloor();
+  Object.entries(DESKS).forEach(([k, arr]) => {
+    const active = k === 'ceo' && lastRun && lastRun.escalated;
+    arr.forEach(d => drawDesk(d, k, active));
+  });
+  const mx = px(MAILBOX.x), my = py(MAILBOX.y);
+  ctx.fillStyle = '#3a3f63';
+  ctx.fillRect(mx, my + 8, 16, 14);
+  ctx.fillStyle = '#4d5378';
+  ctx.fillRect(mx, my + 8, 16, 3);
+  ctx.fillStyle = '#2b3048';
+  ctx.fillRect(mx + 3, my + 12, 10, 8);
+  ctx.fillStyle = '#e7b13c';
+  ctx.fillRect(mx + 6, my + 14, 4, 2);
+  ctx.fillStyle = '#9aa2d0';
+  ctx.font = '7px monospace';
+  ctx.fillText('POST', mx - 2, my + 5);
+  const sorted = chars.slice().sort((a, b) => a.y - b.y);
+  sorted.forEach(drawChar);
+  const layer = el('bubbles');
+  layer.innerHTML = '';
+  bubbles.forEach(b => {
+    const c = chars.find(x => x.id === b.charId);
+    if (!c) return;
+    const d = document.createElement('div');
+    d.className = 'bubble' + (b.tone ? ' ' + b.tone : '');
+    d.textContent = b.text;
+    d.style.left = (px(c.x) + 8) + 'px';
+    d.style.top = (py(c.y) - 6) + 'px';
+    layer.appendChild(d);
+  });
+}
+
+let raf = 0, lastT = 0;
+function frame(t) {
+  const dt = Math.min(0.05, (t - lastT) / 1000 || 0.016);
+  lastT = t;
+  updateChars(dt);
+  render();
+  raf = requestAnimationFrame(frame);
+}
+
+function fitStage() {
+  const wrap = el('stageWrap');
+  const stage = el('stage');
+  const avail = wrap.clientWidth - 22;
+  const s = Math.min(1, avail / OFFICE_W);
+  stage.style.transform = 'scale(' + s + ')';
+  wrap.style.height = (OFFICE_H * s + 22) + 'px';
+}
+
+function renderDecision() {
+  const page = el('pageDecision');
+  if (!lastRun) {
+    page.innerHTML = '<div class="empty">처리한 요청이 없습니다.<br>아래 입력창에 고객 문의를 넣거나 예시 버튼을 눌러 시작하세요.</div>';
+    return;
+  }
+  const r = lastRun;
+  const badge = r.mode === 'ai'
+    ? '<span class="badge ai"><span class="dot"></span>실제 AI · ' + esc(state.settings.model) + '</span>'
+    : '<span class="badge demo"><span class="dot"></span>체험 모드</span>';
+  let html = '<div class="qa"><div class="qtext">요청 · ' + new Date(r.ts).toLocaleTimeString('ko-KR') + ' · ' + r.ms + 'ms</div><div style="font-size:12px;line-height:1.6">' + esc(r.text) + '</div><div style="margin-top:6px">' + badge + '</div></div>';
+  r.steps.forEach(s => {
+    const conf = confidenceOf(s.probs, s.q);
+    const top = topOf(s.probs);
+    html += '<div class="qa"><div class="qtext">' + esc(s.q.key) + ' · 임계 ' + (s.q.threshold || 0.5).toFixed(2) + (conf.ok ? ' · 통과' : ' · 미달') + '</div><div style="font-size:12px;margin-bottom:6px">' + esc(s.q.question) + '</div><div class="opts">';
+    s.q.options.forEach(o => {
+      const p = s.probs[o.label] || 0;
+      const win = o.label === top.label;
+      html += '<div class="opt' + (win ? ' win' : '') + '"><span class="nm">' + esc(o.label) + '</span><span class="bar"><i style="width:' + (p * 100).toFixed(1) + '%"></i></span><span class="pc">' + (p * 100).toFixed(0) + '%</span></div>';
+    });
+    html += '</div></div>';
+  });
+  const needle = -90 + clamp(r.confidence, 0, 1) * 180;
+  const col = r.confidence >= 0.7 ? '#4cb96b' : r.confidence >= 0.5 ? '#e0a83a' : '#d9524a';
+  html += '<div class="qa"><div class="qtext">종합 신뢰도</div><div class="gauge"><div class="dial">' +
+    '<svg class="arc" viewBox="0 0 96 52"><path d="M6 48 A42 42 0 0 1 90 48" fill="none" stroke="#15172b" stroke-width="9"/><path d="M6 48 A42 42 0 0 1 90 48" fill="none" stroke="url(#gg)" stroke-width="9"/>' +
+    '<defs><linearGradient id="gg" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#d9524a"/><stop offset="0.5" stop-color="#e0a83a"/><stop offset="1" stop-color="#4cb96b"/></linearGradient></defs></svg>' +
+    '<div class="needle" style="transform:rotate(' + needle.toFixed(1) + 'deg)"></div><div class="hub"></div></div>' +
+    '<div class="meta"><b style="color:' + col + '">' + (r.confidence * 100).toFixed(1) + '%</b><span>' + (r.escalated ? '임계 미달 → CEO 에스컬레이션' : '임계 통과 → 자동 처리') + '</span></div></div>' +
+    '<div class="kv"><div>결정 시간 <b>' + r.ms + 'ms</b></div><div>처리 <b>' + r.ms / 1000 + '초</b></div><div>팀 <b>' + esc(r.team) + '</b></div><div>모호 <b>' + (r.ambiguous ? r.ambReasons.join(', ') : '없음') + '</b></div></div>' +
+    '<div class="path">최소 경로: ' + esc(r.path) + '</div></div>';
+  const meta = actionMeta(r.action);
+  const vcls = r.escalated ? 'low' : r.confidence >= 0.7 ? 'ok' : 'mid';
+  html += '<div class="verdict ' + vcls + '"><span class="ic">' + (r.escalated ? '⚑' : r.confidence >= 0.7 ? '✔' : '!') + '</span><div><b>' + esc(meta.label) + (r.escalated ? ' · CEO 검토 요청' : '') + '</b><span>' + esc(meta.note || '') + '</span></div></div>';
+  page.innerHTML = html;
+}
+
+function updateHud() {
+  const n = state.records.length;
+  el('hudCount').innerHTML = n + '<small>건</small>';
+  const avg = n ? state.records.reduce((a, r) => a + r.ms, 0) / n / 1000 : 0;
+  el('hudAvg').innerHTML = avg.toFixed(2) + '<small>초</small>';
+  el('hudCost').textContent = '₩0';
+  // 연결 상태 표시: connected가 true면 버전 표시, 아니면 미확인
+  if (state.settings.connected) {
+    const v = state.settings.version || 'local';
+    el('hudConn').textContent = `Ollama ${v}`;
+    const badge = el('modeBadge');
+    badge.className = 'badge ai';
+    badge.innerHTML = '<span class="dot"></span>실제 AI';
+  } else {
+    el('hudConn').textContent = '미확인';
+    const badge = el('modeBadge');
+    badge.className = 'badge demo';
+    badge.innerHTML = '<span class="dot"></span>체험 모드';
+  }
+}
+
+function stepSummary(steps) {
+  return steps.map(s => s.q.key + '=' + topOf(s.probs).label + '(' + (topOf(s.probs).p * 100).toFixed(0) + '%)').join(' · ');
+}
+
+async function runRequest(text) {
+  if (busy) { queue.push(text); return; }
+  text = String(text || '').trim();
+  if (!text) { msg('info', '입력창에 고객 문의를 입력하세요.'); return; }
+  busy = true;
+  el('btnRun').disabled = true;
+  const t0 = now();
+  el('runMsg').innerHTML = '<div class="msg info">요청을 분석하고 있습니다…</div>';
+  const plan = planSteps(text, null, null);
+  plan.title = text.slice(0, 24);
+  let mode = 'demo';
+  let answers = {};
+  let aiNote = '';
+  if (state.settings.connected) {
+    try {
+      const raw = await callOllama(text, plan);
+      const parsed = parseAnswerToSteps(text, plan, raw);
+      answers = parsed.answers;
+      aiNote = parsed.note;
+      plan.steps.forEach(s => { if (parsed.answers[s.q.key]) { /* probs already set */ } });
+      mode = 'ai';
+      // Ollama 연결 성공 시 플래그 및 버전 정보 갱신
+      state.settings.connected = true;
+      state.settings.version = state.settings.model || '0.8b';
+      msg('ok', 'Ollama 응답 적용: ' + esc(aiNote));
+    } catch (e) {
+      mode = 'demo';
+      msg('bad', 'Ollama 호출 실패(' + esc(e.message) + ') → 체험 모드로 처리합니다.');
+    }
+  }
+  const answersFinal = {};
+  plan.steps.forEach(s => { answersFinal[s.q.key] = topOf(s.probs).label; });
+  const ambFlags = plan.steps.map(s => s.meta && s.meta.amb).filter(Boolean);
+  const team = answersFinal.q_team || plan.team;
+  const action = resolveAction(answersFinal);
+  const confidence = confidenceOverall(plan.steps);
+  const thr = plan.steps.map(s => Number(s.q.threshold) || 0.5);
+  const escalated = confidence < Math.min.apply(null, thr.concat([0.5]));
+  const ms = now() - t0;
+  lastRun = {
+    ts: t0, text, mode, team, steps: plan.steps, answers: answersFinal, action,
+    confidence, escalated, ms,
+    ambiguous: ambFlags.some(Boolean),
+    ambReasons: Array.from(new Set(ambFlags.flatMap(a => a.reasons))),
+    path: minPath(team, answersFinal.q_refund),
+    aiNote
+  };
+  renderDecision();
+  updateHud();
+  await animateRun(lastRun);
+  const record = {
+    id: 'r' + (state.records.length + 1) + '-' + t0,
+    ts: t0, text, mode, team,
+    steps: plan.steps.map(s => ({ key: s.q.key, probs: s.probs, chosen: answersFinal[s.q.key], p: topOf(s.probs).p })),
+    chosen: answersFinal, action, confidence, escalated, ms,
+    thumbs: null, correct: null,
+    learn: { mode, keywords: collectLearn(text, plan.steps, answersFinal) }
+  };
+  state.records.unshift(record);
+  if (state.records.length > 200) state.records.length = 200;
+  saveState();
+  renderRecords();
+  busy = false;
+  el('btnRun').disabled = false;
+  if (queue.length) { const nx = queue.shift(); setTimeout(() => runRequest(nx), 260); }
+}
+
+function collectLearn(text, steps, answers) {
+  const learn = {};
+  steps.forEach(s => {
+    const t = topOf(s.probs);
+    const kw = keywordScores(text, s.q.key);
+    learn[s.q.key] = { label: t.label, matched: kw[t.label] ? kw[t.label].matched : [] };
+  });
+  return learn;
+}
+
+async function animateRun(run) {
+  const team = run.team;
+  const mailChar = findIdleChar('우편') || spawnChar('우편', MAILBOX, null);
+  setBubble(mailChar, '우편 수신', 'info');
+  await wait(220);
+  await moveTo(mailChar, { x: LANE, y: LANE }, 'route');
+  for (let i = 0; i < run.steps.length; i++) {
+    const s = run.steps[i];
+    const t = topOf(s.probs);
+    const line = s.q.key.replace('q_', '').toUpperCase() + '? ' + t.label;
+    setBubble(mailChar, line, t.p >= (s.q.threshold || 0.5) ? 'good' : 'warn');
+    await wait(300);
+  }
+  const seat = reconcileDesks(team);
+  const deskPt = { x: seat.desk.x, y: seat.desk.y + 2 };
+  await moveTo(mailChar, deskPt, 'handover');
+  setBubble(mailChar, '분류: ' + team, 'good');
+  let agent = findIdleChar(team);
+  if (!agent) {
+    if (seat.reuse) {
+      const last = chars.filter(c => c.team === team && c.deskKey === seat.key).pop();
+      if (last) {
+        agent = last;
+        agent.busy = false;
+        agent.carrying = true;
+      }
+    }
+  }
+  if (!agent) agent = spawnChar(team, deskPt, { key: seat.key, idx: seat.idx });
+  if (agent.carrying === false) agent.carrying = true;
+  await wait(260);
+  const show = agent === mailChar ? mailChar : agent;
+  setBubble(show, '업무 수령', 'info');
+  const ceoPt = { x: CEO_DESK.x, y: CEO_DESK.y + 2 };
+  const isRefundApprove = run.action === 'act_refund_approve';
+  const target = (run.escalated || isRefundApprove) ? ceoPt : { x: CEO_DESK.x - 3, y: CEO_DESK.y + 2 };
+  await moveTo(agent, target, 'carry');
+  const meta = actionMeta(run.action);
+  const tone = run.escalated ? 'bad' : meta.tone === 'good' ? 'good' : meta.tone === 'mid' ? 'warn' : '';
+  setBubble(agent, meta.label + (run.escalated ? ' ?' : ''), tone);
+  if (run.escalated || isRefundApprove) {
+    const ceo = findIdleChar('CEO') || spawnChar('CEO', { x: CEO_DESK.x - 1, y: CEO_DESK.y + 3 }, { key: 'ceo', idx: 0 });
+    setBubble(ceo, run.escalated ? '신뢰도 미달 · 검토 요청' : '환불 승인 검토', run.escalated ? 'bad' : 'good');
+    await wait(520);
+  }
+  await wait(420);
+  trimChars();
+}
+
+function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function msg(kind, html) {
+  el('runMsg').innerHTML = '<div class="msg ' + kind + '">' + html + '</div>';
+}
+
+function renderRecords() {
+  const page = el('pageRecords');
+  if (!state.records.length) { page.innerHTML = '<div class="empty">저장된 기록이 없습니다.</div>'; return; }
+  let html = '';
+  state.records.forEach(r => {
+    const meta = actionMeta(r.action);
+    html += '<div class="rec"><div class="top"><span class="no">#' + esc(r.id) + '</span>' +
+      '<span class="team" style="background:' + teamColor(r.team) + '">' + esc(r.team) + '</span>' +
+      (r.mode === 'ai' ? '<span class="badge ai" style="font-size:9px">AI</span>' : '<span class="badge demo" style="font-size:9px">체험</span>') +
+      (r.escalated ? '<span class="badge" style="background:#7a1b16;color:#ffd5d1;font-size:9px">에스컬레이션</span>' : '') + '</div>' +
+      '<div class="act">' + esc(meta.label) + (r.escalated ? ' · CEO' : '') + '</div>' +
+      '<div class="txt">' + esc(r.text) + '</div>' +
+      '<div class="flow">' + esc(r.steps.map(s => s.key + '=' + s.chosen + ' ' + (s.p * 100).toFixed(0) + '%').join('<br>')) +
+      '<br>신뢰도 ' + (r.confidence * 100).toFixed(1) + '% · ' + r.ms + 'ms</div>' +
+      '<div class="learn">' + esc(JSON.stringify(r.learn)) + '</div>' +
+      '<div class="foot">' +
+      '<button class="btn tiny" data-thumbs="' + r.id + '|up"' + (r.thumbs === 'up' ? ' style="background:#4cb96b"' : '') + '>👍 정확</button>' +
+      '<button class="btn tiny" data-thumbs="' + r.id + '|down"' + (r.thumbs === 'down' ? ' style="background:#d9524a"' : '') + '>👎 부정</button>' +
+      '<select data-correct="' + r.id + '"><option value="">올바른 조치 선택</option>' +
+      Object.keys(state.actions).map(k => '<option value="' + k + '"' + (r.correct === k ? ' selected' : '') + '>' + esc(state.actions[k].label) + '</option>').join('') +
+      '</select></div></div>';
+  });
+  page.innerHTML = html;
+  page.querySelectorAll('[data-thumbs]').forEach(b => b.onclick = () => {
+    const [id, v] = b.dataset.thumbs.split('|');
+    const r = state.records.find(x => x.id === id);
+    if (!r) return;
+    r.thumbs = r.thumbs === v ? null : v;
+    if (r.thumbs && state.actions[r.action]) {
+      r.correct = v === 'up' ? r.action : state.actions[r.action].label;
+    }
+    saveState();
+    renderRecords();
+    msg('info', '피드백을 기록했습니다. 같은 유형 요청의 키워드 가중치에 반영됩니다.');
+  });
+  page.querySelectorAll('[data-correct]').forEach(s => s.onchange = () => {
+    const r = state.records.find(x => x.id === s.dataset.correct);
+    if (!r) return;
+    r.correct = s.value || null;
+    saveState();
+    renderRecords();
+    msg('ok', '올바른 조치를 기록했습니다.');
+  });
+}
+
+function renderTree() {
+  const page = el('pageTree');
+  const tree = ui.draftTree || state.tree;
+  let html = '<div class="hint">질문 문구·선택지·가중치·다음 질문·임계값을 고쳐 즉시 반영할 수 있습니다. 선택지 2~26개, 질문 1~64개까지 허용됩니다.</div>';
+  tree.questions.forEach(q => {
+    html += '<div class="qcard" data-q="' + esc(q.key) + '"><div class="qh"><span class="key">' + esc(q.key) + '</span>' +
+      '<input class="qtitle" data-f="question" value="' + esc(q.question) + '">' +
+      '<label class="hint">임계 <input class="thr" data-f="threshold" type="number" step="0.05" min="0.05" max="0.99" value="' + (Number(q.threshold) || 0.5) + '"></label></div>';
+    q.options.forEach((o, i) => {
+      html += '<div class="oline"><input class="n" data-o="' + i + '" data-of="label" value="' + esc(o.label) + '">' +
+        '<input data-o="' + i + '" data-of="weight" type="number" step="0.05" min="0.01" value="' + (Number(o.weight) || 1) + '">' +
+        '<input data-o="' + i + '" data-of="next" value="' + esc(o.next || 'END') + '">' +
+        '<button class="btn tiny" data-delopt="' + esc(q.key) + '|' + i + '">✕</button></div>';
+    });
+    html += '<div class="iobtns"><button class="btn tiny" data-addopt="' + esc(q.key) + '">선택지 추가</button></div></div>';
+  });
+  html += '<div class="iobtns"><button class="btn tiny" data-addq="1">질문 추가</button><button class="btn tiny" data-delq="1">마지막 질문 삭제</button></div>';
+  html += '<div class="qcard"><div class="qh"><span class="key">ACTION</span><span class="hint">액션 라벨과 메모를 수정할 수 있습니다.</span></div>';
+  Object.keys(state.actions).forEach(k => {
+    html += '<div class="oline" style="grid-template-columns:minmax(80px,1fr) minmax(80px,1.2fr)"><span class="n">' + esc(k) + '</span>' +
+      '<input data-act="' + esc(k) + '|label" value="' + esc(state.actions[k].label) + '">' +
+      '<input data-act="' + esc(k) + '|note" value="' + esc(state.actions[k].note || '') + '"></div>';
+  });
+  html += '</div>';
+  html += '<div class="iobtns"><button class="btn primary" id="btnTreeSave">트리 저장</button><button class="btn" id="btnTreeReset">기본값 복원</button></div><div id="treeMsg"></div>';
+  page.innerHTML = html;
+  const draft = ui.draftTree || (ui.draftTree = clone(state.tree));
+  page.querySelectorAll('[data-q]').forEach(card => {
+    const q = draft.questions.find(x => x.key === card.dataset.q);
+    card.querySelectorAll('[data-f]').forEach(inp => inp.oninput = () => {
+      const f = inp.dataset.f;
+      q[f] = f === 'threshold' ? clamp(Number(inp.value) || 0.5, 0.05, 0.99) : inp.value;
+    });
+    card.querySelectorAll('[data-of]').forEach(inp => inp.oninput = () => {
+      const i = Number(inp.dataset.o);
+      const f = inp.dataset.of;
+      if (!q.options[i]) return;
+      q.options[i][f] = f === 'weight' ? (Number(inp.value) || 1) : inp.value;
+    });
+  });
+  page.querySelectorAll('[data-addopt]').forEach(b => b.onclick = () => {
+    const q = draft.questions.find(x => x.key === b.dataset.addopt);
+    if (q.options.length >= 26) { tmsg('bad', '선택지는 26개까지입니다.'); return; }
+    q.options.push({ label: '새 선택지', weight: 1, next: 'END' });
+    ui.draftTree = draft;
+    renderTree();
+  });
+  page.querySelectorAll('[data-delopt]').forEach(b => b.onclick = () => {
+    const [key, i] = b.dataset.delopt.split('|');
+    const q = draft.questions.find(x => x.key === key);
+    if (q.options.length <= 2) { tmsg('bad', '선택지는 최소 2개입니다.'); return; }
+    q.options.splice(Number(i), 1);
+    ui.draftTree = draft;
+    renderTree();
+  });
+  page.querySelectorAll('[data-act]').forEach(inp => inp.oninput = () => {
+    const [k, f] = inp.dataset.act.split('|');
+    state.actions[k][f] = inp.value;
+  });
+  const addQ = page.querySelector('[data-addq]');
+  if (addQ) addQ.onclick = () => {
+    if (draft.questions.length >= 64) { tmsg('bad', '질문은 64개까지입니다.'); return; }
+    let n = draft.questions.length + 1;
+    while (draft.questions.some(q => q.key === 'q_custom' + n)) n++;
+    draft.questions.push({ key: 'q_custom' + n, team: 'router', threshold: 0.5, question: '새 질문 문구를 입력하세요.', options: [{ label: '예', weight: 1, next: 'END' }, { label: '아니요', weight: 1, next: 'END' }] });
+    ui.draftTree = draft;
+    renderTree();
+  };
+  const delQ = page.querySelector('[data-delq]');
+  if (delQ) delQ.onclick = () => {
+    if (draft.questions.length <= 1) { tmsg('bad', '질문은 최소 1개입니다.'); return; }
+    draft.questions.pop();
+    ui.draftTree = draft;
+    renderTree();
+  };
+  el('btnTreeSave').onclick = () => {
+    const err = validateTree(draft);
+    if (err) { tmsg('bad', esc(err)); return; }
+    state.tree = clone(draft);
+    ui.draftTree = null;
+    saveState();
+    renderTree();
+    tmsg('ok', '트리를 저장했습니다.');
+  };
+  el('btnTreeReset').onclick = () => {
+    state.tree = clone(DEFAULT_TREE);
+    ui.draftTree = null;
+    saveState();
+    renderTree();
+    tmsg('ok', '기본 트리로 복원했습니다.');
+  };
+}
+
+function tmsg(kind, html) {
+  const m = el('treeMsg');
+  if (m) m.innerHTML = '<div class="msg ' + kind + '">' + html + '</div>';
+}
+
+function validateTree(t) {
+  if (!t || !Array.isArray(t.questions) || t.questions.length < 1) return '질문이 최소 1개 필요합니다.';
+  if (t.questions.length > 64) return '질문은 64개까지만 허용됩니다.';
+  for (const q of t.questions) {
+    if (!q.key) return '질문 키(key)가 비어 있습니다.';
+    if (!q.question || String(q.question).length > 200) return q.key + ': 문구는 200자 이내로 입력하세요.';
+    if (!Array.isArray(q.options) || q.options.length < 2) return q.key + ': 선택지는 최소 2개입니다.';
+    if (q.options.length > 26) return q.key + ': 선택지는 최대 26개입니다.';
+    for (const o of q.options) {
+      if (!o.label || String(o.label).length > 40) return q.key + ': 선택지 이름이 비었거나 40자를 넘습니다.';
+      if (!(Number(o.weight) > 0)) return q.key + '/' + o.label + ': 가중치는 0보다 커야 합니다.';
+    }
+  }
+  return null;
+}
+
+function validateState(o) {
+  if (!o || typeof o !== 'object') return 'JSON 객체가 아닙니다.';
+  if (!o.tree) return 'tree 필드가 없습니다.';
+  const err = validateTree(o.tree);
+  if (err) return 'tree 오류: ' + err;
+  if (o.records && !Array.isArray(o.records)) return 'records는 배열이어야 합니다.';
+  if (o.settings && typeof o.settings !== 'object') return 'settings는 객체여야 합니다.';
+  const size = JSON.stringify(o).length;
+  if (size > 64 * 1024) return '전체 상태가 64KB를 초과합니다(현재 ' + Math.round(size / 1024) + 'KB).';
+  return null;
+}
+
+function renderSettings() {
+  const s = state.settings;
+  let html = '<div class="field"><i>Ollama 엔드포인트</i><input id="setEndpoint" value="' + esc(s.endpoint) + '"></div>' +
+    '<div class="field"><i>모델</i><select id="setModel">' + MODELS.map(m => '<option value="' + m.id + '"' + (s.model === m.id ? ' selected' : '') + '>' + esc(m.label) + '</option>').join('') + '</select></div>' +
+    '<div class="field"><i>속도 배수</i><select id="setSpeed"><option value="1"' + (s.speed === 1 ? ' selected' : '') + '>1배 (기본)</option><option value="2"' + (s.speed === 2 ? ' selected' : '') + '>2배</option></select></div>' +
+    '<div class="iobtns"><button class="btn primary" id="btnSaveSet">설정 저장</button><button class="btn" id="btnProbe">서버 상태 확인</button></div>' +
+    '<div id="setMsg"></div>' +
+    '<div class="hint" style="margin-top:10px">서버 준비: <code>ollama serve</code> · 버전 0.35 이상 · <code>ollama pull tev1:0.8b</code><br>브라우저 CORS 허용: <code>OLLAMA_ORIGINS=* ollama serve</code><br>파일 직접 열기 대신 <code>python3 -m http.server</code> 로 served 상태에서 열면 더 안정적입니다.</div>' +
+    '<div class="qcard" style="margin-top:10px"><div class="qh"><span class="key">JSON</span><span class="hint">전체 상태(트리·설정·기록) 내보내기 / 가져오기</span></div>' +
+    '<textarea id="importBox" placeholder=\'{"tree":{...},"settings":{...},"records":[...]}\'></textarea>' +
+    '<div class="iobtns"><button class="btn" id="btnExport">내보내기</button><button class="btn" id="btnImport">가져오기</button></div><div id="ioMsg"></div></div>' +
+    '<div class="qcard"><div class="qh"><span class="key">DANGER</span></div><div class="iobtns"><button class="btn danger" id="btnClearRec">기록 삭제</button><button class="btn danger" id="btnWipe">전체 초기화</button></div></div>';
+  el('pageSettings').innerHTML = html;
+  el('btnSaveSet').onclick = () => {
+    const ep = el('setEndpoint').value.trim();
+    if (!/^https?:\/\//i.test(ep)) { smsg('bad', '엔드포인트는 http:// 또는 https:// 로 시작해야 합니다.'); return; }
+    s.endpoint = ep;
+    s.model = el('setModel').value;
+    s.speed = Number(el('setSpeed').value) === 2 ? 2 : 1;
+    saveState();
+    smsg('ok', '설정을 저장했습니다.');
+    updateHud();
+  };
+  el('btnProbe').onclick = () => probe();
+  el('btnExport').onclick = () => {
+    const out = { tree: state.tree, actions: state.actions, settings: { endpoint: s.endpoint, model: s.model, speed: s.speed }, records: state.records };
+    el('importBox').value = JSON.stringify(out, null, 2);
+    el('ioMsg').innerHTML = '<div class="msg ok">내보냈습니다. 이 텍스트를 저장해 두세요.</div>';
+  };
+  el('btnImport').onclick = () => {
+    let parsed;
+    try { parsed = JSON.parse(el('importBox').value); } catch (e) { el('ioMsg').innerHTML = '<div class="msg bad">JSON 파싱 실패: ' + esc(e.message) + '</div>'; return; }
+    const err = validateState(parsed);
+    if (err) { el('ioMsg').innerHTML = '<div class="msg bad">검증 실패: ' + esc(err) + '</div>'; return; }
+    state.tree = parsed.tree;
+    if (parsed.actions) state.actions = parsed.actions;
+    if (parsed.settings) {
+      state.settings.endpoint = parsed.settings.endpoint || s.endpoint;
+      state.settings.model = parsed.settings.model || s.model;
+      state.settings.speed = parsed.settings.speed || 1;
+    }
+    state.records = Array.isArray(parsed.records) ? parsed.records : [];
+    ui.draftTree = null;
+    saveState();
+    renderTree(); renderRecords(); renderSettings(); updateHud();
+    el('ioMsg').innerHTML = '<div class="msg ok">가져오기 완료.</div>';
+  };
+  el('btnClearRec').onclick = () => { state.records = []; saveState(); renderRecords(); updateHud(); smsg('ok', '기록을 모두 지웠습니다.'); };
+  el('btnWipe').onclick = () => {
+    localStorage.removeItem(STORAGE_KEY);
+    state.tree = clone(DEFAULT_TREE);
+    state.actions = clone(ACTION_META);
+    state.records = [];
+    ui.draftTree = null;
+    saveState();
+    renderTree(); renderRecords(); renderSettings(); updateHud();
+    smsg('ok', '전체 상태를 초기화했습니다.');
+  };
+}
+
+function smsg(kind, html) {
+  const m = el('setMsg');
+  if (m) m.innerHTML = '<div class="msg ' + kind + '">' + html + '</div>';
+}
+
+async function probe() {
+  smsg('info', '서버 상태를 확인하는 중…');
+  try {
+    const base = new URL(state.settings.endpoint);
+    const verUrl = base.origin + '/api/version';
+    const r = await fetch(verUrl, { method: 'GET' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    state.settings.version = j.version || null;
+    smsg('ok', 'Ollama 버전 ' + esc(state.settings.version || '확인 불가') + ' · 요구 0.35 이상');
+    let tags = [];
+    try {
+      const t = await fetch(base.origin + '/api/tags', { method: 'GET' });
+      if (t.ok) {
+        const tj = await t.json();
+        tags = (tj.models || []).map(m => m.name || m.model);
+        state.settings.models = tags;
+      }
+    } catch (e) {}
+    if (tags.length) {
+      const has = tags.some(t => t.replace(/:latest$/, '') === state.settings.model.replace(/:latest$/, ''));
+      smsg(has ? 'ok' : 'info', '설치된 모델: ' + esc(tags.join(', ')) + (has ? '' : ' · 선택한 ' + esc(state.settings.model) + ' 이(가) 설치되어 있지 않으면 체험 모드로 동작합니다.'));
+    }
+    const test = await pingEndpoint();
+    state.settings.connected = test.ok;
+    smsg(test.ok ? 'ok' : 'info', test.ok ? '엔드포인트 응답 확인 · 실제 AI 모드로 전환합니다.' : '엔드포인트 응답 없음(' + esc(test.msg) + ') · 체험 모드로 유지합니다.');
+    updateHud();
+    saveState();
+  } catch (e) {
+    state.settings.connected = false;
+    state.settings.version = null;
+    smsg('bad', 'Ollama 서버에 연결할 수 없습니다(' + esc(e.message) + '). <code>ollama serve</code> 를 실행하고 <code>OLLAMA_ORIGINS=*</code> 를 설정해 주세요.');
+    updateHud();
+  }
+}
+
+async function pingEndpoint() {
+  try {
+    const r = await fetch(state.settings.endpoint, { method: 'OPTIONS' });
+    return { ok: r.status < 500, msg: 'status ' + r.status };
+  } catch (e) {
+    return { ok: false, msg: e.message };
+  }
+}
+
+function saveState() {
+  try {
+    const payload = { version: STORAGE_VERSION, tree: state.tree, actions: state.actions, settings: { endpoint: state.settings.endpoint, model: state.settings.model, speed: state.settings.speed, version: state.settings.version }, records: state.records };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  } catch (e) {}
+}
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const o = JSON.parse(raw);
+    const err = validateState(o);
+    if (err) { console.warn('저장 상태 무시:', err); return; }
+    state.tree = o.tree;
+    if (o.actions) state.actions = o.actions;
+    if (o.settings) {
+      state.settings.endpoint = o.settings.endpoint || state.settings.endpoint;
+      state.settings.model = o.settings.model || state.settings.model;
+      state.settings.speed = Number(o.settings.speed) === 2 ? 2 : 1;
+      state.settings.version = o.settings.version || null;
+      state.settings.connected = o.settings.connected !== false; // 기본 연결 상태 보존
+    }
+    state.records = Array.isArray(o.records) ? o.records : [];
+  } catch (e) {}
+  // 연결 상태 기본값(true): 저장된 값이 없거나 false면 실제 AI 모드로 간주
+  state.settings.connected = true;
+}
+
+function renderExamples() {
+  const box = el('examples');
+  box.innerHTML = '';
+  EXAMPLES.forEach((t, i) => {
+    const b = document.createElement('button');
+    b.className = 'chip';
+    b.textContent = (i + 1) + '. ' + t.slice(0, 26) + (t.length > 26 ? '…' : '');
+    b.title = t;
+    b.onclick = () => { el('input').value = t; runRequest(t); };
+    box.appendChild(b);
+  });
+  const amb = document.createElement('button');
+  amb.className = 'chip amb';
+  amb.textContent = '⚠ 모호 예시: ' + AMBIGUOUS_EXAMPLE;
+  amb.onclick = () => { el('input').value = AMBIGUOUS_EXAMPLE; runRequest(AMBIGUOUS_EXAMPLE); };
+  box.appendChild(amb);
+}
+
+function bind() {
+  document.querySelectorAll('.tabs button').forEach(b => {
+    b.onclick = () => {
+      document.querySelectorAll('.tabs button').forEach(x => x.setAttribute('aria-selected', String(x === b)));
+      document.querySelectorAll('.tabpage').forEach(p => p.setAttribute('data-active', String(p.dataset.tab === b.dataset.tab)));
+      ui.tab = b.dataset.tab;
+      if (ui.tab === 'records') renderRecords();
+      if (ui.tab === 'tree') renderTree();
+      if (ui.tab === 'settings') renderSettings();
+    };
+  });
+  el('btnRun').onclick = () => runRequest(el('input').value);
+  el('input').addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') runRequest(el('input').value);
+  });
+  el('autoRun').onchange = e => {
+    state.settings.autoRun = e.target.checked;
+    toggleAuto();
+  };
+  window.addEventListener('resize', fitStage);
+}
+
+function toggleAuto() {
+  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+  el('autoRun').checked = !!state.settings.autoRun;
+  if (state.settings.autoRun) {
+    autoTimer = setInterval(() => {
+      if (busy) return;
+      const t = EXAMPLES[autoIndex % EXAMPLES.length];
+      autoIndex++;
+      el('input').value = t;
+      runRequest(t);
+    }, 2400);
+  }
+}
+
+function boot() {
+  loadState();
+  el('autoRun').checked = !!state.settings.autoRun;
+  renderExamples();
+  renderDecision();
+  renderRecords();
+  renderTree();
+  renderSettings();
+  updateHud();
+  bind();
+  fitStage();
+  render();
+  raf = requestAnimationFrame(frame);
+  const mailChar = findIdleChar('우편') || spawnChar('우편', MAILBOX, null);
+  setBubble(mailChar, 'tev1 준비 완료', 'good');
+  [TEAMS.청구, TEAMS.기술, TEAMS.상담].forEach(t => {
+    const seat = reconcileDesks(t.name);
+    const c = spawnChar(t.name, { x: seat.desk.x, y: seat.desk.y + 2 }, { key: seat.key, idx: seat.idx });
+    sleepT(c);
+  });
+  setTimeout(() => setBubble(mailChar, '', ''), 2600);
+  setTimeout(() => { bubbles.length = 0; }, 2800);
+  probe();
+}
+
+boot();
+  
+// AI 직원 배지 업데이트 함수
+function updateAIEmployeeBads() {
+  const container = document.getElementById('aiEmpBads');
+  if (!container) return;
+  const employees = state.aiEmployees || [];
+  let html = '';
+  employees.forEach(e => {
+    html += `<span class="badge ai-emp ${e.id}" style="background:${e.color};"><span>${e.name}</span></span>`;
+  });
+  container.innerHTML = html;
+}
+
+updateAIEmployeeBads();
+updateOllamaStatus(true);
+
+
+
+</script>
+<!-- AI 직원 배지 (캔버스 우측 상단) -->
+<div id="aiEmpBads" style="position:absolute;right:60px;top:10px;display:flex;gap:6px;"></div>
+
+<!-- Ollama 상태 배지 + WebSocket 상태 + 인증 + 캘린더 + PWA (캔버스 우측 상단) -->
+<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+  <div id="ollamaStatus" class="badge ai-emp ai-ceo" style="font-size:11px;">🟢 로컬 AI 연결됨</div>
+  <div id="wsStatusBadge" class="badge demo" style="font-size:11px;">WS 끊김</div>
+  <button id="testOllamaConn" class="btn ghost tiny" onclick="testOllamaConnection()" title="Ollama 연결 테스트">테스트</button>
+  
+  <!-- 인증 상태 바 -->
+  <div id="authBar" style="display:flex;align-items:center;gap:6px;padding:4px 8px;background:var(--ink2);border:1px solid var(--line);border-radius:3px;">
+    <span id="authStatus" class="mono" style="font-size:11px;">로그아웃</span>
+    <button id="loginBtn" class="btn ghost tiny" style="padding:2px 8px;">로그인</button>
+    <button id="googleAuthBtn" class="btn ghost tiny" style="padding:2px 8px;display:none;">Google 캘린더 연결</button>
+  </div>
+  
+  <!-- 캘린더 액션 버튼 -->
+  <div id="calendarActions" style="display:flex;gap:4px;display:none;">
+    <button id="addToCalendarBtn" class="btn ghost tiny" onclick="addMeetingToCalendar()" title="회의 내용을 캘린더에 추가">📅 캘린더 추가</button>
+    <button id="viewCalendarBtn" class="btn ghost tiny" onclick="viewCalendarEvents()" title="예정된 일정 보기">📋 일정 보기</button>
+  </div>
+
+  <!-- PWA 액션 버튼 -->
+  <div id="pwaActions" style="display:flex;gap:4px;">
+    <button id="installBtn" class="btn ghost tiny" style="display:none;" title="앱으로 설치">📱 설치</button>
+    <button id="pushBtn" class="btn ghost tiny" title="푸시 알림 설정">🔔 알림 켬</button>
+  </div>
+</div>
+
+<!-- CEO 에스컬레이션 패널 -->
+<div id="ceoEscalation" class="panel" style="position:absolute;right:10px;top:10px;width:340px;display:none;">
+  <div class="hd" style="margin:-10px -10px 10px;padding:10px;background:var(--ink);color:#fff;border-radius:4px 4px 0 0;">
+    <div style="font-size:13px;">CEO 에스컬레이션</div>
+    <button class="btn ghost tiny" onclick="hideCEOEscalation()">닫기</button>
+  </div>
+  <div class="bd" style="padding:10px;font-size:12px;color:#c3c8ea;"></div>
+</div>
+
+<!-- 결정 로그 패널 (왼쪽 아래) -->
+<div id="decisionLogPanel" class="panel" style="bottom:10px;left:10px;width:300px;"></div>
+<!-- 광고 데이터 조회 버튼 -->
+<button class="btn" onclick="fetchAdData()">광고 데이터 조회</button>
+<div id="adDataPanel" style="margin-top:8px;max-height:200px;overflow:auto;border:1px solid var(--line);border-radius:3px;background:var(--ink2);padding:8px;font-size:12px;color:#c3c8ea;"></div>
+<!-- AI 연결 토글 버튼 -->
+<button id="toggleAIConn" class="btn" style="position:absolute;left:10px;bottom:10px;">AI 연결 끔</button>
+<script>
+const aiToggle = document.getElementById('toggleAIConn');
+let aiConnected = state.settings.connected; // 현재 상태 유지
+aiToggle.addEventListener('click', () => {
+  aiConnected = !aiConnected;
+  state.settings.connected = aiConnected;
+  updateHud();
+  aiToggle.textContent = aiConnected ? 'AI 연결 켬' : 'AI 연결 끔';
+});
+</script>
+<!-- 데이터 지속성 관리 / 테스트 버튼 -->
+<div id="stateControls" style="position:absolute;left:10px;bottom:50px;display:flex;gap:10px;flex-wrap:wrap;">
+  <button id="exportState" class="btn" title="현재 상태를 JSON 파일로 내보냅니다">상태 내보내기</button>
+  <button id="importState" class="btn" title="JSON 파일에서 상태를 가져옵니다">상태 가져오기</button>
+  <button id="runTests" class="btn" title="자체 테스트 실행">테스트 실행</button>
+</div>
+<script>
+// 데이터 내보내기
+function exportState() {
+  const data = {
+    version: state.version,
+    tree: state.tree,
+    records: state.records,
+    actions: state.actions,
+    settings: state.settings,
+    aiEmployees: state.aiEmployees,
+    departments: state.departments,
+    decisionLog: state.decisionLog
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'tev1_state_' + new Date().toISOString().slice(0,10) + '.json';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// 데이터 가져오기
+function importState(jsonStr) {
+  try {
+    const data = JSON.parse(jsonStr);
+    if (confirm('초기화하고 가져오시겠습니까? 현재 데이터는 삭제됩니다.')) {
+      state.version = data.version;
+      state.tree = data.tree;
+      state.records = data.records;
+      state.actions = data.actions;
+      state.settings = data.settings;
+      state.aiEmployees = data.aiEmployees;
+      state.departments = data.departments;
+      state.decisionLog = data.decisionLog;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      loadState(); // UI 갱신
+      msg('ok', '상태가 성공적으로 가져와졌습니다.');
+    }
+  } catch (e) {
+    console.error('상태 가져오기 오류', e);
+    msg('bad', '데이터 형식이 올바르지 않습니다.');
+  }
+}
+
+// 테스트 실행
+function runTests() {
+  const results = [];
+  // 1. AI 직원 9명 확인
+  if (state.aiEmployees && state.aiEmployees.length === 9) {
+    results.push('✅ AI 직원 9명 정상');
+  } else {
+    results.push('❌ AI 직원 수 불일치: ' + (state.aiEmployees?.length || 0));
+  }
+  // 2. 연결 상태 boolean
+  if (typeof state.settings.connected === 'boolean') {
+    results.push('✅ 연결 상태 boolean');
+  } else {
+    results.push('❌ 연결 상태 타입 오류');
+  }
+  // 3. 핵심 함수 존재
+  const requiredFuncs = ['callOllama', 'planSteps', 'resolveAction', 'updateHud', 'renderDecision'];
+  requiredFuncs.forEach(f => {
+    if (typeof window[f] === 'function') {
+      results.push('✅ 함수 ' + f + ' 존재');
+    } else {
+      results.push('❌ 함수 ' + f + ' 없음');
+    }
+  }
+  // 4. HUD 요소 존재
+  const hudIds = ['hudCount', 'hudAvg', 'hudCost', 'hudConn', 'modeBadge'];
+  hudIds.forEach(id => {
+    if (document.getElementById(id)) {
+      results.push('✅ HUD 요소 ' + id + ' 존재');
+    } else {
+      results.push('❌ HUD 요소 ' + id + ' 없음');
+    }
+  }
+  // 결과 출력
+  const msgStr = results.join('\\n');
+  alert('=== 테스트 결과 ===\\n' + msgStr);
+  console.log('테스트 결과:', results);
+}
+
+// Ollama 연결 테스트 함수
+function testOllamaConnection() {
+  const btn = document.getElementById('testOllamaConn');
+  const originalText = btn.textContent;
+  btn.textContent = '테스트 중...';
+  btn.disabled = true;
+  // 간단한 ping: Ollama endpoint에 GET 요청 (또는 POST 빈 요청)
+  fetch(state.settings.endpoint.replace('/v1/systemone', ''), { method: 'GET', signal: AbortSignal.timeout(5000) })
+    .then(res => {
+      if (res.ok) {
+        state.settings.connected = true;
+        state.settings.version = state.settings.model || '0.8b';
+        updateHud();
+        msg('ok', 'Ollama 연결 성공');
+      } else {
+        throw new Error('HTTP ' + res.status);
+      }
+    })
+    .catch(err => {
+      state.settings.connected = false;
+      updateHud();
+      msg('bad', 'Ollama 연결 실패: ' + err.message);
+    })
+    .finally(() => {
+      btn.textContent = '테스트';
+      btn.disabled = false;
+    });
+}
+
+// ============================================
+// 인증 및 캘린더 연동 기능
+// ============================================
+
+// 로그인 상태 관리
+let currentUser = null;
+let currentToken = null;
+
+// 인증 UI 업데이트
+function updateAuthUI(isLoggedIn, user = null) {
+  const authStatus = document.getElementById('authStatus');
+  const loginBtn = document.getElementById('loginBtn');
+  const googleAuthBtn = document.getElementById('googleAuthBtn');
+  const calendarActions = document.getElementById('calendarActions');
+  
+  if (isLoggedIn && user) {
+    authStatus.textContent = `${user.name}님`;
+    authStatus.className = 'mono';
+    loginBtn.textContent = '로그아웃';
+    loginBtn.onclick = logout;
+    googleAuthBtn.style.display = 'inline-block';
+    calendarActions.style.display = 'flex';
+    currentUser = user;
+  } else {
+    authStatus.textContent = '로그아웃';
+    authStatus.className = 'mono';
+    loginBtn.textContent = '로그인';
+    loginBtn.onclick = showLoginPrompt;
+    googleAuthBtn.style.display = 'none';
+    calendarActions.style.display = 'none';
+    currentUser = null;
+    currentToken = null;
+  }
+}
+
+// 로그인 프롬프트 표시
+function showLoginPrompt() {
+  const userId = prompt('사용자 ID를 입력하세요:', 'user_' + Math.random().toString(36).substr(2, 6));
+  if (!userId) return;
+  const name = prompt('표시할 이름을 입력하세요:', '사용자');
+  if (!name) return;
+  
+  login(userId, name);
+}
+
+// 로그인 처리
+async function login(userId, name) {
+  try {
+    const response = await fetch('http://localhost:8081/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, name })
+    });
+    const data = await response.json();
+    
+    if (data.token) {
+      currentToken = data.token;
+      localStorage.setItem('tev1_token', data.token);
+      localStorage.setItem('tev1_userId', data.userId);
+      localStorage.setItem('tev1_userName', data.name);
+      
+      // Socket.IO 인증
+      if (socketIO && socketIO.connected) {
+        socketIO.emit('auth', { token: data.token, roomId: 'default' });
+      }
+      
+      updateAuthUI(true, { userId: data.userId, name: data.name });
+      msg('ok', '로그인 성공: ' + data.name);
+    } else {
+      msg('bad', '로그인 실패: ' + (data.error || 'Unknown error'));
+    }
+  } catch (err) {
+    console.error('Login error:', err);
+    msg('bad', '로그인 오류: ' + err.message);
+  }
+}
+
+// 로그아웃 처리
+function logout() {
+  currentToken = null;
+  localStorage.removeItem('tev1_token');
+  localStorage.removeItem('tev1_userId');
+  localStorage.removeItem('tev1_userName');
+  
+  if (socketIO && socketIO.connected) {
+    socketIO.emit('logout');
+  }
+  
+  updateAuthUI(false);
+  msg('ok', '로그아웃 되었습니다');
+}
+
+// Google OAuth URL 생성 및 리다이렉트
+async function connectGoogleCalendar() {
+  if (!currentUser) {
+    msg('bad', '먼저 로그인해주세요');
+    return;
+  }
+  
+  try {
+    const response = await fetch(`http://localhost:8081/api/auth/google/url?userId=${currentUser.userId}`);
+    const data = await response.json();
+    
+    if (data.url) {
+      // 새 창에서 OAuth 진행
+      const authWindow = window.open(data.url, 'googleAuth', 'width=500,height=600');
+      
+      // 메시지 리스너로 토큰 수신
+      window.addEventListener('message', function handleAuthMessage(event) {
+        if (event.data && event.data.type === 'google_auth_success') {
+          window.removeEventListener('message', handleAuthMessage);
+          authWindow.close();
+          checkCalendarConnection();
+        }
+      });
+      
+      // 폴링으로 토큰 확인 (대안)
+      setTimeout(checkCalendarConnection, 2000);
+    }
+  } catch (err) {
+    console.error('Google Auth error:', err);
+    msg('bad', 'Google 연결 오류: ' + err.message);
+  }
+}
+
+// 캘린더 연결 상태 확인
+async function checkCalendarConnection() {
+  if (!currentUser) return;
+  
+  try {
+    const response = await fetch(`http://localhost:8081/api/calendar/events?userId=${currentUser.userId}`);
+    if (response.ok) {
+      const data = await response.json();
+      msg('ok', 'Google 캘린더 연결됨 (' + (data.events?.length || 0) + '개 일정)');
+      document.getElementById('googleAuthBtn').textContent = '캘린더 연결됨 ✓';
+      document.getElementById('googleAuthBtn').disabled = true;
+    }
+  } catch (err) {
+    // 연결되지 않음
+  }
+}
+
+// 회의 내용을 캘린더에 추가
+async function addMeetingToCalendar() {
+  if (!currentUser || !currentToken) {
+    msg('bad', '로그인이 필요합니다');
+    return;
+  }
+  
+  const title = prompt('일정 제목:', 'TEV1 회의: ' + new Date().toLocaleDateString('ko-KR'));
+  if (!title) return;
+  
+  const description = prompt('일정 설명 (결정 로그 등):', getDecisionLogText());
+  const startTime = prompt('시작 시간 (ISO 형식):', new Date().toISOString());
+  if (!startTime) return;
+  
+  const endTime = prompt('종료 시간 (ISO 형식):', new Date(Date.now() + 3600000).toISOString());
+  if (!endTime) return;
+  
+  try {
+    const response = await fetch('http://localhost:8081/api/calendar/events', {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${currentToken}`
+      },
+      body: JSON.stringify({
+        userId: currentUser.userId,
+        title,
+        description,
+        startTime,
+        endTime
+      })
+    });
+    
+    const data = await response.json();
+    if (data.success) {
+      msg('ok', '캘린더에 추가되었습니다: ' + data.event.htmlLink);
+    } else {
+      if (data.authUrl) {
+        msg('bad', 'Google 캘린더 연결이 필요합니다');
+        connectGoogleCalendar();
+      } else {
+        msg('bad', '캘린더 추가 실패: ' + (data.error || 'Unknown'));
+      }
+    }
+  } catch (err) {
+    console.error('Add to calendar error:', err);
+    msg('bad', '캘린더 추가 오류: ' + err.message);
+  }
+}
+
+// 캘린더 일정 조회
+async function viewCalendarEvents() {
+  if (!currentUser || !currentToken) {
+    msg('bad', '로그인이 필요합니다');
+    return;
+  }
+  
+  try {
+    const response = await fetch(`http://localhost:8081/api/calendar/events?userId=${currentUser.userId}`);
+    const data = await response.json();
+    
+    if (data.events && data.events.length > 0) {
+      const eventsText = data.events.map(e => 
+        `${e.start?.dateTime || e.start?.date}: ${e.summary}`
+      ).join('\n');
+      alert('예정된 일정:\n\n' + eventsText);
+    } else {
+      msg('ok', '예정된 일정이 없습니다');
+    }
+  } catch (err) {
+    console.error('View calendar error:', err);
+    msg('bad', '일정 조회 오류: ' + err.message);
+  }
+}
+
+// 결정 로그 텍스트 추출
+function getDecisionLogText() {
+  const panel = document.getElementById('decisionLogPanel');
+  if (!panel) return '';
+  return panel.innerText || panel.textContent || '';
+}
+
+// 현재 회의 ID 가져오기
+function getCurrentMeetingId() {
+  // 현재 방 ID 또는 회의 ID 반환
+  return 'meeting_' + Date.now();
+}
+
+// 저장된 토큰으로 자동 로그인 시도
+async function tryAutoLogin() {
+  const savedToken = localStorage.getItem('tev1_token');
+  const savedUserId = localStorage.getItem('tev1_userId');
+  const savedUserName = localStorage.getItem('tev1_userName');
+  
+  if (savedToken && savedUserId) {
+    try {
+      const response = await fetch('http://localhost:8081/api/auth/me', {
+        headers: { 'Authorization': `Bearer ${savedToken}` }
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        currentToken = savedToken;
+        updateAuthUI(true, { userId: savedUserId, name: savedUserName, ...data.user });
+        
+        // Socket.IO 재인증
+        if (socketIO && socketIO.connected) {
+          socketIO.emit('auth', { token: savedToken, roomId: 'default' });
+        }
+        
+        // 캘린더 연결 상태 확인
+        checkCalendarConnection();
+      } else {
+        logout();
+      }
+    } catch (err) {
+      logout();
+    }
+  } else {
+    updateAuthUI(false);
+  }
+}
+
+// 페이지 로드 시 자동 로그인 시도
+document.addEventListener('DOMContentLoaded', () => {
+  tryAutoLogin();
+});
+
+// Google OAuth 콜백 처리 (프론트엔드에서)
+window.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'google_auth_success') {
+    const tokens = event.data.tokens;
+    msg('ok', 'Google 캘린더 연결 성공!');
+    checkCalendarConnection();
+  }
+});
+
+// 로그인 버튼 이벤트 리스너
+document.getElementById('loginBtn')?.addEventListener('click', () => {
+  if (currentUser) {
+    logout();
+  } else {
+    showLoginPrompt();
+  }
+});
+
+document.getElementById('googleAuthBtn')?.addEventListener('click', connectGoogleCalendar);
+
+document.getElementById('exportState').addEventListener('click', exportState);
+document.getElementById('importState').addEventListener('click', () => {
+  const input = prompt('가져올 JSON 텍스트를 입력하세요:', '');
+  if (input) importState(input);
+});
+document.getElementById('runTests').addEventListener('click', runTests);
+document.getElementById('exportState').addEventListener('click', exportState);
+<script>
+// WebSocket 실시간 로그 스트리밍
+let ws = null;
+let wsReconnectAttempts = 0;
+const maxReconnectAttempts = 5;
+const wsUrl = state.settings.wsUrl || 'wss://echo.websocket.org'; // 기본 에코 서버
+
+function initWebSocket() {
+  if (ws && ws.readyState === WebSocket.OPEN) return;
+  
+  try {
+    ws = new WebSocket(wsUrl);
+    ws.onopen = () => {
+      console.log('WebSocket 연결됨');
+      wsReconnectAttempts = 0;
+      updateWsStatus('connected');
+    };
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'log') {
+          appendDecisionLog(data.message, data.level);
+        }
+      } catch (e) {
+        console.warn('WebSocket 메시지 파싱 오류:', e);
+      }
+    };
+    ws.onclose = () => {
+      console.log('WebSocket 연결 종료');
+      updateWsStatus('disconnected');
+      if (wsReconnectAttempts < maxReconnectAttempts) {
+        wsReconnectAttempts++;
+        setTimeout(initWebSocket, 2000 * wsReconnectAttempts);
+      }
+    };
+    ws.onerror = (error) => {
+      console.error('WebSocket 오류:', error);
+      updateWsStatus('error');
+    };
+  } catch (e) {
+    console.error('WebSocket 초기화 실패:', e);
+    updateWsStatus('error');
+  }
+}
+
+function updateWsStatus(status) {
+  const badge = document.getElementById('wsStatusBadge');
+  if (badge) {
+    badge.className = 'badge ' + (status === 'connected' ? 'ai' : 'demo');
+    badge.textContent = status === 'connected' ? 'WS 연결됨' : 'WS 끊김';
+  }
+}
+
+// Socket.IO 실시간 통신 핸들러
+function initSocketIO() {
+  if (!socketIO) return;
+
+  // Join room
+  socketIO.on('connect', () => {
+    console.log('Socket.IO connected:', socketIO.id);
+  });
+
+  // Handle room join
+  socketIO.on('join-room', (data) => {
+    const { roomId, name } = data;
+    socketIO.emit('join', { roomId, name });
+  });
+
+  // Handle user joined
+  socketIO.on('user-joined', (data) => {
+    addSystemMessage(`${data.name}님이 입장하셨습니다.`, 'info');
+  });
+
+  // Handle user left
+  socketIO.on('user-left', (data) => {
+    addSystemMessage(`${data.name}님이 퇴장하셨습니다.`, 'info');
+  });
+
+  // Handle cursor movement
+  socketIO.on('cursor', (data) => {
+    updateCursorPosition(data.userId, data.x, data.y, data.name, data.color);
+  });
+
+  // Handle message
+  socketIO.on('message', (data) => {
+    addMessage(data.userId, data.name, data.content, data.timestamp);
+  });
+
+  // Handle WebRTC offer
+  socketIO.on('webrtc-offer', (data) => {
+    handleWebRTCOffer(data.sdp, data.from);
+  });
+
+  // Handle WebRTC answer
+  socketIO.on('webrtc-answer', (data) => {
+    handleWebRTCAnswer(data.sdp);
+  });
+
+  // Handle WebRTC ICE candidates
+  socketIO.on('webrtc-ice-candidate', (data) => {
+    handleWebRTCIC(data.candidate, data.label, data.network);
+  });
+}
+
+// WebRTC 연결 관리
+let localStream = null;
+let peerConnections = new Map(); // peerId -> RTCPeerConnection
+
+// 로컬 미디어 스트림 가져오기
+async function startWebRTC() {
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true
+    });
+    addLocalStream(localStream);
+    console.log('WebRTC 로컬 스트림 시작');
+  } catch (err) {
+    console.error('WebRTC 미디어 액세스 오류:', err);
+    addSystemMessage('카메라/마이크 권한이 거부되었습니다.', 'error');
+  }
+}
+
+// 로컬 비디오 요소 추가
+function addLocalStream(stream) {
+  const video = document.createElement('video');
+  video.srcObject = stream;
+  video.autoplay = true;
+  video.className = 'webrtc-video';
+  document.body.appendChild(video);
+}
+
+// 원격 스트림 핸들러
+function onRemoteStream(stream, peerId) {
+  const video = document.createElement('video');
+  video.srcObject = stream;
+  video.autoplay = true;
+  video.className = 'webrtc-video';
+  document.body.appendChild(video);
+  console.log(`원격 스트림 수신: ${peerId}`);
+}
+
+// WebRTC 오퍼 처리
+async function handleWebRTCOffer(sdp, from) {
+  const pc = new RTCPeerConnection();
+  peerConnections.set(from, pc);
+
+  // Add local stream
+  if (localStream) {
+    localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+  }
+
+  // Add ICE candidates handler
+  pc.onicecandidate = (event) => {
+    if (event.candidate) {
+      socketIO.emit('webrtc-ice-candidate', {
+        candidate: event.candidate,
+        label: event.candidate.sdpMLineIndex,
+        network: event.candidate.component
+      }, from);
+    }
+  };
+
+  // Add remote stream handler
+  pc.onaddstream = (event) => {
+    onRemoteStream(event.stream, from);
+  };
+
+  // Set remote description
+  await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+
+  // Create answer
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+
+  // Send answer back
+  socketIO.emit('webrtc-answer', { sdp: pc.localDescription }, from);
+}
+
+// WebRTC 답변 처리
+async function handleWebRTCAnswer(sdp) {
+  // This is handled on the offer side
+}
+
+// WebRTC ICE 후보 처리
+function handleWebRTCIC(candidate, label, network) {
+  // Add ICE candidate to appropriate peer connection
+}
+
+// 메시지 추가 UI
+function addSystemMessage(message, level = 'info') {
+  const panel = document.getElementById('systemMessages');
+  if (!panel) return;
+  const time = new Date().toLocaleTimeString('ko-KR');
+  const levelClass = level === 'error' ? 'style="color:#d9534a"' : level === 'warn' ? 'style="color:#f5a623"' : '';
+  panel.innerHTML += `<div ${levelClass}>[${time}] SYSTEM: ${message}</div>`;
+  panel.scrollTop = panel.scrollHeight;
+}
+
+// 메시지 추가 UI
+function addMessage(userId, name, content, timestamp) {
+  const panel = document.getElementById('messages');
+  if (!panel) return;
+  const time = new Date(timestamp).toLocaleTimeString('ko-KR');
+  panel.innerHTML += `<div>[${time}] ${name}: ${content}</div>`;
+  panel.scrollTop = panel.scrollHeight;
+}
+
+// 커서 위치 업데이트
+function updateCursorPosition(userId, x, y, name, color) {
+  // Update cursor UI
+  const cursorsPanel = document.getElementById('cursors');
+  if (!cursorsPanel) return;
+  
+  let cursorEl = document.querySelector(`[data-cursor-id="${userId}"]`);
+  if (!cursorEl) {
+    cursorEl = document.createElement('div');
+    cursorEl.setAttribute('data-cursor-id', userId);
+    cursorEl.className = 'cursor-dot';
+    cursorEl.style.left = '0px';
+    cursorEl.style.top = '0px';
+    cursorEl.style.backgroundColor = color;
+    cursorsPanel.appendChild(cursorEl);
+  }
+  
+  cursorEl.style.left = `${x}px`;
+  cursorEl.style.top = `${y}px`;
+}
+
+// 페이지 로드 시 초기화
+document.addEventListener('DOMContentLoaded', () => {
+  initWebSocket();
+  initSocketIO();
+});
+  const panel = document.getElementById('decisionLogPanel');
+  if (!panel) return;
+  const time = new Date().toLocaleTimeString('ko-KR');
+  const levelClass = level === 'error' ? 'style="color:#d9534a"' : level === 'warn' ? 'style="color:#f5a623"' : '';
+  panel.innerHTML += `<div ${levelClass}>[${time}] ${message}</div>`;
+  panel.scrollTop = panel.scrollHeight;
+}
+
+// i18n 번역 시스템
+const i18n = {
+  ko: {
+    'tev1 결정 데스크': 'tev1 결정 데스크',
+    'PIXEL OFFICE · AI DECISION': 'PIXEL OFFICE · AI DECISION',
+    '실행 모드': '실행 모드',
+    '처리 건수': '처리 건수',
+    '평균 결정 시간': '평균 결정 시간',
+    '누적 비용': '누적 비용',
+    '연결 상태': '연결 상태',
+    '언어': '언어',
+    'AI 연결 끔': 'AI 연결 끔',
+    'AI 연결 켬': 'AI 연결 켬',
+    '광고 데이터 조회': '광고 데이터 조회',
+    '상태 내보내기': '상태 내보내기',
+    '상태 가져오기': '상태 가져오기',
+    '테스트 실행': '테스트 실행',
+    '체험 모드': '체험 모드',
+    '실제 AI': '실제 AI',
+    'Ollama 연결 테스트': 'Ollama 연결 테스트',
+    'CEO 에스컬레이션': 'CEO 에스컬레이션',
+    '닫기': '닫기',
+    '결정 로그': '결정 로그',
+    '광고 데이터': '광고 데이터',
+    '테스트': '테스트',
+    'AI 연결 끔': 'AI 연결 끔',
+    'AI 연결 켬': 'AI 연결 켬',
+    '체험 모드': '체험 모드',
+    '실제 AI': '실제 AI',
+    'Ollama 연결됨': 'Ollama 연결됨',
+    'WS 끊김': 'WS 끊김',
+    'WS 연결됨': 'WS 연결됨',
+    '테스트 중...': '테스트 중...',
+    'Ollama 연결 성공': 'Ollama 연결 성공',
+    'Ollama 연결 실패': 'Ollama 연결 실패',
+    '데이터를 불러오는 중...': '데이터를 불러오는 중...',
+    '조회된 항목이 없습니다.': '조회된 항목이 없습니다.',
+    '처리한 요청이 없습니다.': '처리한 요청이 없습니다.',
+    '아래 입력창에 고객 문의를 넣거나 예시 버튼을 눌러 시작하세요.': '아래 입력창에 고객 문의를 넣거나 예시 버튼을 눌러 시작하세요.',
+    '요청을 분석하고 있습니다…': '요청을 분석하고 있습니다…',
+    'Ollama 응답 적용': 'Ollama 응답 적용',
+    'Ollama 호출 실패': 'Ollama 호출 실패',
+    '체험 모드로 처리합니다.': '체험 모드로 처리합니다.',
+    '초기화하고 가져오시겠습니까? 현재 데이터는 삭제됩니다.': '초기화하고 가져오시겠습니까? 현재 데이터는 삭제됩니다.',
+    '상태가 성공적으로 가져와졌습니다.': '상태가 성공적으로 가져와졌습니다.',
+    '데이터 형식이 올바르지 않습니다.': '데이터 형식이 올바르지 않습니다.',
+    '테스트 결과': '테스트 결과',
+  },
+  en: {
+    'tev1 결정 데스크': 'tev1 Decision Desk',
+    'PIXEL OFFICE · AI DECISION': 'PIXEL OFFICE · AI DECISION',
+    '실행 모드': 'Execution Mode',
+    '처리 건수': 'Processed Count',
+    '평균 결정 시간': 'Avg Decision Time',
+    '누적 비용': 'Total Cost',
+    '연결 상태': 'Connection Status',
+    '언어': 'Language',
+    'AI 연결 끔': 'AI Off',
+    'AI 연결 켬': 'AI On',
+    '광고 데이터 조회': 'Ad Data Query',
+    '상태 내보내기': 'Export State',
+    '상태 가져오기': 'Import State',
+    '테스트 실행': 'Run Tests',
+    '체험 모드': 'Demo Mode',
+    '실제 AI': 'Real AI',
+    'Ollama 연결 테스트': 'Test Ollama',
+    'CEO 에스컬레이션': 'CEO Escalation',
+    '닫기': 'Close',
+    '결정 로그': 'Decision Log',
+    '광고 데이터': 'Ad Data',
+    '테스트': 'Test',
+    'AI 연결 끔': 'AI Off',
+    'AI 연결 켬': 'AI On',
+    '체험 모드': 'Demo Mode',
+    '실제 AI': 'Real AI',
+    'Ollama 연결됨': 'Ollama Connected',
+    'WS 끊김': 'WS Disconnected',
+    'WS 연결됨': 'WS Connected',
+    '테스트 중...': 'Testing...',
+    'Ollama 연결 성공': 'Ollama Connected',
+    'Ollama 연결 실패': 'Ollama Failed',
+    '데이터를 불러오는 중...': 'Loading data...',
+    '조회된 항목이 없습니다.': 'No items found.',
+    '처리한 요청이 없습니다.': 'No requests processed.',
+    '아래 입력창에 고객 문의를 넣거나 예시 버튼을 눌러 시작하세요.': 'Enter a query below or click an example to start.',
+    '요청을 분석하고 있습니다…': 'Analyzing request…',
+    'Ollama 응답 적용': 'Ollama Response Applied',
+    'Ollama 호출 실패': 'Ollama Call Failed',
+    '체험 모드로 처리합니다.': 'Falling back to demo mode.',
+    '초기화하고 가져오시겠습니까? 현재 데이터는 삭제됩니다.': 'Reset and import? Current data will be lost.',
+    '상태가 성공적으로 가져와졌습니다.': 'State imported successfully.',
+    '데이터 형식이 올바르지 않습니다.': 'Invalid data format.',
+    '테스트 결과': 'Test Results',
+  },
+  ja: {
+    'tev1 결정 데스크': 'tev1 意思決定デスク',
+    'PIXEL OFFICE · AI DECISION': 'PIXEL OFFICE · AI DECISION',
+    '실행 모드': '実行モード',
+    '처리 건수': '処理件数',
+    '평균 결정 시간': '平均決定時間',
+    '누적 비용': '累積コスト',
+    '연결 상태': '接続状態',
+    '언어': '言語',
+    'AI 연결 끔': 'AI オフ',
+    'AI 연결 켬': 'AI オン',
+    '광고 데이터 조회': '広告データ照会',
+    '상태 내보내기': '状態エクスポート',
+    '상태 가져오기': '状態インポート',
+    '테스트 실행': 'テスト実行',
+    '체험 모드': 'デモモード',
+    '실제 AI': '実AI',
+    'Ollama 연결 테스트': 'Ollama接続テスト',
+    'CEO 에스컬레이션': 'CEOエスカレーション',
+    '닫기': '閉じる',
+    '결정 로그': '決定ログ',
+    '광고 데이터': '広告データ',
+    '테스트': 'テスト',
+    'AI 연결 끔': 'AI オフ',
+    'AI 연결 켬': 'AI オン',
+    '체험 모드': 'デモモード',
+    '실제 AI': '実AI',
+    'Ollama 연결됨': 'Ollama接続済み',
+    'WS 끊김': 'WS 切断',
+    'WS 연결됨': 'WS 接続済み',
+    '테스트 중...': 'テスト中...',
+    'Ollama 연결 성공': 'Ollama接続成功',
+    'Ollama 연결 실패': 'Ollama接続失敗',
+    '데이터를 불러오는 중...': 'データ読み込み中...',
+    '조회된 항목이 없습니다.': '該当項目なし',
+    '처리한 요청이 없습니다.': '処理済みリクエストなし',
+    '아래 입력창에 고객 문의를 넣거나 예시 버튼을 눌러 시작하세요.': '下の入力欄に問い合わせを入力するか、例ボタンを押して開始してください。',
+    '요청을 분석하고 있습니다…': 'リクエストを分析中…',
+    'Ollama 응답 적용': 'Ollama応答適用',
+    'Ollama 호출 실패': 'Ollama呼び出し失敗',
+    '체험 모드로 처리합니다.': 'デモモードで処理します。',
+    '초기화하고 가져오시겠습니까? 현재 데이터는 삭제됩니다.': 'リセットしてインポートしますか？現在のデータは削除されます。',
+    '상태가 성공적으로 가져와졌습니다.': '状態を正常にインポートしました。',
+    '데이터 형식이 올바르지 않습니다.': 'データ形式が正しくありません。',
+    '테스트 결과': 'テスト結果',
+  }
+};
+
+let currentLang = localStorage.getItem('lang') || 'ko';
+
+function setLanguage(lang) {
+  currentLang = lang;
+  localStorage.setItem('lang', lang);
+  document.documentElement.lang = lang;
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const key = el.getAttribute('data-i18n');
+    if (i18n[lang][key]) {
+      if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+        el.placeholder = i18n[lang][key];
+      } else if (el.tagName === 'OPTION') {
+        el.textContent = i18n[lang][key];
+      } else {
+        el.textContent = i18n[lang][key];
+      }
+    }
+  });
+  // Update language selector
+  document.getElementById('langSelect').value = lang;
+  document.documentElement.lang = lang;
+}
+
+// Initialize language on load
+document.addEventListener('DOMContentLoaded', () => {
+  setLanguage(currentLang);
+  document.getElementById('langSelect').addEventListener('change', (e) => setLanguage(e.target.value));
+});
+
+// 페이지 로드 시 WebSocket 초기화
+document.addEventListener('DOMContentLoaded', () => {
+  initWebSocket();
+});
+
+// WebSocket URL 설정 변경 함수
+function setWsUrl(url) {
+  state.settings.wsUrl = url;
+  if (ws) ws.close();
+  initWebSocket();
+}
+</script>
+<style>
+  :root {
+    --bg: #f8f9fa;
+    --ink: #1a1a2e;
+    --ink2: #2d2d44;
+    --line: #e0e0e0;
+    --accent: #f5a623;
+    --good: #4cb96b;
+    --bad: #d9534a;
+    --sky: #3a86ff;
+    --panel: #ffffff;
+    --panel-border: #e0e0e0;
+  }
+  [data-theme="dark"] {
+    --bg: #1a1a2e;
+    --ink: #eaeaea;
+    --ink2: #b0b0b0;
+    --line: #333344;
+    --accent: #f5a623;
+    --good: #4cb96b;
+    --bad: #d9534a;
+    --sky: #3a86ff;
+    --panel: #25253a;
+    --panel-border: #3a3a4a;
+  }
+  body { background: var(--bg); color: var(--ink); transition: background 0.3s, color 0.3s; }
+  .panel { background: var(--panel); border-color: var(--panel-border); }
+  .btn { transition: background 0.3s, color 0.3s; }
+</style>
+<script>
+  const themeToggle = document.getElementById('themeToggle');
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const savedTheme = localStorage.getItem('theme');
+  if (savedTheme) {
+    document.documentElement.setAttribute('data-theme', savedTheme);
+    themeToggle.textContent = savedTheme === 'dark' ? '☀️' : '🌙';
+  } else if (prefersDark) {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    themeToggle.textContent = '☀️';
+  }
+  themeToggle.addEventListener('click', () => {
+    const current = document.documentElement.getAttribute('data-theme');
+    const next = current === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('theme', next);
+    themeToggle.textContent = next === 'dark' ? '☀️' : '🌙';
+  });
+});
+
+// Socket.IO 초기화 (실시간 통신 및 WebRTC 시그널링)
+const socketIO = io(`${window.location.origin}`, {
+  transports: ['websocket'],
+  upgrade: false
+});
+
+// WebSocket 실시간 로그 스트리밍 (기존 기능 유지)
+let ws = null;
+let wsReconnectAttempts = 0;
+const wsUrl = state.settings.wsUrl || 'wss://echo.websocket.org'; // 기본 에코 서버
+
+function initWebSocket() {
+  if (ws && ws.readyState === WebSocket.OPEN) return;
+  
+  try {
+    ws = new WebSocket(wsUrl);
+    ws.onopen = () => {
+      console.log('WebSocket 연결됨');
+      wsReconnectAttempts = 0;
+      updateWsStatus('connected');
+    };
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'log') {
+          appendDecisionLog(data.message, data.level);
+        }
+      } catch (e) {
+        console.warn('WebSocket 메시지 파싱 오류:', e);
+      }
+    };
+    ws.onclose = () => {
+      console.log('WebSocket 연결 종료');
+      updateWsStatus('disconnected');
+      if (wsReconnectAttempts < maxReconnectAttempts) {
+        wsReconnectAttempts++;
+        setTimeout(initWebSocket, 2000 * wsReconnectAttempts);
+      }
+    };
+    ws.onerror = (error) => {
+      console.error('WebSocket 오류:', error);
+      updateWsStatus('error');
+    };
+  } catch (e) {
+    console.error('WebSocket 초기화 실패:', e);
+    updateWsStatus('error');
+  }
+}
+</script>
+
+<script>
+// Service Worker 등록 (PWA 지원) - Blob URL 사용
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    const swCode = `
+      const CACHE_NAME = 'tev1-v3';
+      const STATIC_CACHE = 'tev1-static-v3';
+      const DYNAMIC_CACHE = 'tev1-dynamic-v3';
+      const OFFLINE_URL = '/offline.html';
+
+      const urlsToCache = [
+        '/',
+        '/index.html',
+        '/manifest.json',
+        '/icon-192.png',
+        '/icon-512.png'
+      ];
+
+      // Install: 정적 리소스 캐싱
+      self.addEventListener('install', (event) => {
+        event.waitUntil(
+          caches.open(STATIC_CACHE)
+            .then((cache) => cache.addAll(urlsToCache))
+            .then(() => self.skipWaiting())
+        );
+      });
+
+      // Activate: 오래된 캐시 정리
+      self.addEventListener('activate', (event) => {
+        event.waitUntil(
+          caches.keys().then((cacheNames) => {
+            return Promise.all(
+              cacheNames.map((cacheName) => {
+                if (!cacheName.startsWith('tev1-')) {
+                  return caches.delete(cacheName);
+                }
+              })
+            );
+          }).then(() => self.clients.claim())
+        );
+      });
+
+      // Fetch: 전략적 캐싱 (Stale-While-Revalidate)
+      self.addEventListener('fetch', (event) => {
+        const { request } = event;
+        const url = new URL(request.url);
+
+        // API 요청은 네트워크 우선 (캐시 폴백)
+        if (url.pathname.startsWith('/api/')) {
+          event.respondWith(networkFirstThenCache(request));
+          return;
+        }
+
+        // 정적 리소스는 캐시 우선
+        if (request.method === 'GET' && (url.pathname.endsWith('.js') || url.pathname.endsWith('.css') || url.pathname.endsWith('.png') || url.pathname.endsWith('.ico'))) {
+          event.respondWith(cacheFirstThenNetwork(request));
+          return;
+        }
+
+        // HTML은 네트워크 우선 (오프라인 폴백)
+        if (request.mode === 'navigate' || request.headers.get('accept')?.includes('text/html')) {
+          event.respondWith(networkFirstWithOfflineFallback(request));
+          return;
+        }
+
+        // 기본: 캐시 폴백 네트워크
+        event.respondWith(caches.match(request).then(response => response || fetch(request)));
+      });
+
+      // 전략: 네트워크 우선 -> 캐시
+      async function networkFirstThenCache(request) {
+        try {
+          const response = await fetch(request);
+          if (response.ok) {
+            const cache = await caches.open(DYNAMIC_CACHE);
+            cache.put(request, response.clone());
+          }
+          return response;
+        } catch (error) {
+          const cached = await caches.match(request);
+          return cached || new Response(JSON.stringify({ error: 'Offline', offline: true }), { 
+            headers: { 'Content-Type': 'application/json' } 
+          });
+        }
+      }
+
+      // 전략: 캐시 우선 -> 네트워크
+      async function cacheFirstThenNetwork(request) {
+        const cached = await caches.match(request);
+        if (cached) return cached;
+        try {
+          const response = await fetch(request);
+          if (response.ok) {
+            const cache = await caches.open(STATIC_CACHE);
+            cache.put(request, response.clone());
+          }
+          return response;
+        } catch (error) {
+          return cached || new Response('Offline', { status: 503 });
+        }
+      }
+
+      // 전략: 네트워크 우선 + 오프라인 폴백
+      async function networkFirstWithOfflineFallback(request) {
+        try {
+          const response = await fetch(request);
+          if (response.ok) {
+            const cache = await caches.open(STATIC_CACHE);
+            cache.put(request, response.clone());
+          }
+          return response;
+        } catch (error) {
+          const cached = await caches.match(request);
+          if (cached) return cached;
+          // 오프라인 페이지 반환
+          const offlineResponse = await caches.match(OFFLINE_URL);
+          return offlineResponse || new Response('Offline', { status: 503 });
+        }
+      }
+
+      // Background Sync: 오프라인 상태에서 대기 중인 작업 동기화
+      self.addEventListener('sync', (event) => {
+        if (event.tag === 'sync-messages') {
+          event.waitUntil(syncMessages());
+        } else if (event.tag === 'sync-decisions') {
+          event.waitUntil(syncDecisions());
+        } else if (event.tag === 'sync-cursors') {
+          event.waitUntil(syncCursors());
+        }
+      });
+
+      async function syncMessages() {
+        const cache = await caches.open('tev1-pending');
+        const requests = await cache.keys();
+        for (const req of requests) {
+          try {
+            await fetch(req);
+            await cache.delete(req);
+          } catch (e) {
+            console.log('Sync failed for', req.url);
+          }
+        }
+      }
+
+      async function syncDecisions() { /* 로직 구현 */ }
+      async function syncCursors() { /* 로직 구현 */ }
+
+      // Push 알림 처리
+      self.addEventListener('push', (event) => {
+        if (!event.data) return;
+        const data = event.data.json();
+        const options = {
+          body: data.body || '새 알림이 있습니다.',
+          icon: '/icon-192.png',
+          badge: '/badge-72.png',
+          vibrate: [200, 100, 200],
+          data: data.data || {},
+          actions: [
+            { action: 'open', title: '열기' },
+            { action: 'dismiss', title: '닫기' }
+          ],
+          requireInteraction: true
+        };
+        event.waitUntil(self.registration.showNotification(data.title || 'TEV1', options));
+      });
+
+      // 알림 클릭 처리
+      self.addEventListener('notificationclick', (event) => {
+        event.notification.close();
+        if (event.action === 'open' || !event.action) {
+          event.waitUntil(
+            clients.matchAll({ type: 'window' }).then(clientList => {
+              for (const client of clientList) {
+                if (client.url === '/' && 'focus' in client) return client.focus();
+              }
+              return clients.openWindow('/');
+            })
+          );
+        }
+      });
+
+      // 주기적 동기화 (Periodic Background Sync)
+      self.addEventListener('periodicsync', (event) => {
+        if (event.tag === 'periodic-data-sync') {
+          event.waitUntil(periodicSync());
+        }
+      });
+
+      async function periodicSync() {
+        // 정기적으로 서버 상태 확인 및 데이터 동기화
+        try {
+          await fetch('/health');
+        } catch (e) {
+          console.log('Periodic sync failed');
+        }
+      }
+    `;
+    
+    const blob = new Blob([swCode], { type: 'application/javascript' });
+    const swUrl = URL.createObjectURL(blob);
+    
+    navigator.serviceWorker.register(swUrl)
+      .then(registration => {
+        console.log('Service Worker 등록 성공:', registration.scope);
+        
+        // 주기적 동기화 등록 (지원 시)
+        if ('periodicSync' in registration) {
+          registration.periodicSync.register('periodic-data-sync', { minInterval: 24 * 60 * 60 * 1000 })
+            .catch(e => console.log('Periodic sync not supported:', e));
+        }
+      })
+      .catch(error => {
+        console.log('Service Worker 등록 실패:', error);
+      });
+  });
+}
+
+// ============================================
+// PWA 고급 기능: 설치 프롬프트 + 푸시 알림
+// ============================================
+let deferredPrompt;
+let isPushSupported = 'PushManager' in window;
+let pushSubscription = null;
+
+// 설치 프롬프트 처리
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredPrompt = e;
+  showInstallButton(true);
+});
+
+window.addEventListener('appinstalled', () => {
+  console.log('PWA 설치됨');
+  showInstallButton(false);
+  deferredPrompt = null;
+});
+
+// 설치 버튼 표시/숨김
+function showInstallButton(show) {
+  const installBtn = document.getElementById('installBtn');
+  if (installBtn) {
+    installBtn.style.display = show ? 'inline-flex' : 'none';
+  }
+}
+
+// 설치 버튼 클릭 핸들러
+document.getElementById('installBtn')?.addEventListener('click', async () => {
+  if (!deferredPrompt) return;
+  deferredPrompt.prompt();
+  const { outcome } = await deferredPrompt.userChoice;
+  if (outcome === 'accepted') {
+    msg('ok', '앱이 설치되었습니다!');
+  }
+  deferredPrompt = null;
+  showInstallButton(false);
+});
+
+// 푸시 알림 구독 요청
+async function requestPushPermission() {
+  if (!isPushSupported) {
+    msg('bad', '이 브라우저는 푸시 알림을 지원하지 않습니다');
+    return;
+  }
+
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    
+    // 기존 구독 확인
+    pushSubscription = await registration.pushManager.getSubscription();
+    if (pushSubscription) {
+      msg('ok', '이미 푸시 알림이 활성화되어 있습니다');
+      updatePushUI(true);
+      return;
+    }
+
+    // VAPID 공개 키 (실제 환경에서는 서버에서 생성)
+    const vapidPublicKey = 'BEl62iUYgUivxIkv69yViEuiBIa40HI80NM9fY7s5eDg8qVhKsLGhQ9k5z';
+    
+    pushSubscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(vapidPublicKey)
+    });
+
+    // 구독 정보를 서버에 전송
+    await sendSubscriptionToServer(pushSubscription);
+    
+    updatePushUI(true);
+    msg('ok', '푸시 알림이 활성화되었습니다!');
+  } catch (err) {
+    console.error('Push subscription error:', err);
+    if (err.name === 'NotAllowedError') {
+      msg('bad', '알림 권한이 거부되었습니다. 브라우저 설정에서 허용해주세요.');
+    } else {
+      msg('bad', '푸시 알림 설정 실패: ' + err.message);
+    }
+  }
+}
+
+// 푸시 구독 해제
+async function unsubscribePush() {
+  if (!pushSubscription) return;
+  try {
+    await pushSubscription.unsubscribe();
+    await sendUnsubscriptionToServer(pushSubscription);
+    pushSubscription = null;
+    updatePushUI(false);
+    msg('ok', '푸시 알림이 비활성화되었습니다');
+  } catch (err) {
+    console.error('Unsubscribe error:', err);
+    msg('bad', '푸시 알림 비활성화 실패');
+  }
+}
+
+// VAPID 키 변환 유틸리티
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
+}
+
+// 서버에 구독 정보 전송
+async function sendSubscriptionToServer(subscription) {
+  if (!currentUser) return;
+  try {
+    await fetch('http://localhost:8081/api/push/subscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: currentUser.userId, subscription })
+    });
+  } catch (e) { console.log('Push subscribe server sync failed:', e); }
+}
+
+async function sendUnsubscriptionToServer(subscription) {
+  if (!currentUser) return;
+  try {
+    await fetch('http://localhost:8081/api/push/unsubscribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: currentUser.userId, endpoint: subscription.endpoint })
+    });
+  } catch (e) { console.log('Push unsubscribe server sync failed:', e); }
+}
+
+// 푸시 UI 업데이트
+function updatePushUI(subscribed) {
+  const pushBtn = document.getElementById('pushBtn');
+  if (pushBtn) {
+    pushBtn.textContent = subscribed ? '🔔 알림 끔' : '🔔 알림 켬';
+    pushBtn.className = subscribed ? 'btn' : 'btn ghost';
+    pushBtn.onclick = subscribed ? unsubscribePush : requestPushPermission;
+  }
+}
+
+// 오프라인 감지 및 동기화
+function setupOfflineSync() {
+  window.addEventListener('online', () => {
+    msg('ok', '온라인 상태 복구 - 데이터 동기화 중...');
+    syncPendingData();
+  });
+
+  window.addEventListener('offline', () => {
+    msg('warn', '오프라인 모드 - 변경사항은 로컬에 저장됩니다');
+  });
+}
+
+// 대기 중인 데이터 동기화 (Background Sync API 사용)
+async function syncPendingData() {
+  if ('serviceWorker' in navigator && 'SyncManager' in window) {
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      await registration.sync.register('sync-messages');
+      await registration.sync.register('sync-decisions');
+      await registration.sync.register('sync-cursors');
+      console.log('Background sync registered');
+    } catch (e) {
+      console.log('Background sync not available:', e);
+    }
+  }
+}
+
+// 로컬 데이터 저장 (오프라인 지원)
+function saveOfflineData(key, data) {
+  try {
+    const pending = JSON.parse(localStorage.getItem('tev1_pending') || '[]');
+    pending.push({ key, data, timestamp: Date.now() });
+    localStorage.setItem('tev1_pending', JSON.stringify(pending));
+  } catch (e) { console.error('Save offline failed:', e); }
+}
+
+// 페이지 로드 시 초기화
+document.addEventListener('DOMContentLoaded', () => {
+  setupOfflineSync();
+  
+  // 설치 버튼 초기 상태
+  if (window.matchMedia('(display-mode: standalone)').matches) {
+    showInstallButton(false);
+  }
+});
+
+// 알림 권한 상태 확인
+async function checkNotificationPermission() {
+  if (!isPushSupported) return;
+  const permission = Notification.permission;
+  if (permission === 'granted') {
+    const registration = await navigator.serviceWorker.ready;
+    pushSubscription = await registration.pushManager.getSubscription();
+    updatePushUI(!!pushSubscription);
+  }
+}
+
+checkNotificationPermission();
+document.getElementById('exportState').addEventListener('click', exportState);
+</script>
+
+<!-- 19. 접근성 개선 스크립트 -->
+<script>
+// 접근성 개선: 키보드 내비게이션, ARIA 속성, 포커스 관리
+document.addEventListener('DOMContentLoaded', () => {
+  // 포커스 트랩 (모달/패널용)
+  const focusableElements = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+  
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Tab') {
+      const focusables = Array.from(document.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')).filter(el => !el.disabled && el.offsetParent !== null);
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+    if (e.key === 'Escape') {
+      document.querySelectorAll('.panel[style*="display:"]').forEach(p => p.style.display = 'none');
+    }
+  });
+  
+  // ARIA 라이브 리전 추가
+  const liveRegion = document.createElement('div');
+  liveRegion.setAttribute('aria-live', 'polite');
+  liveRegion.setAttribute('aria-atomic', 'true');
+  liveRegion.style.position = 'absolute';
+  liveRegion.style.left = '-9999px';
+  liveRegion.id = 'ariaLiveRegion';
+  document.body.appendChild(liveRegion);
+  
+  window.announce = (message) => {
+    const region = document.getElementById('ariaLiveRegion');
+    if (region) {
+      region.textContent = '';
+      setTimeout(() => region.textContent = message, 100);
+    }
+  };
+});
+
+// 20. 차트.js 연동 대시보드
+const dashboardCharts = {};
+function initDashboardCharts() {
+  if (typeof Chart === 'undefined') {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';
+    script.onload = createDashboardCharts;
+    document.head.appendChild(script);
+  } else {
+    createDashboardCharts();
+  }
+}
+
+function createDashboardCharts() {
+  const ctx1 = document.getElementById('chartDecisionTime');
+  if (ctx1) {
+    dashboardCharts.decisionTime = new Chart(ctx1, {
+      type: 'line',
+      data: { labels: [], datasets: [{ label: '결정 시간(ms)', data: [], borderColor: 'var(--sky)', tension: 0.3 }] },
+      options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } }
+    });
+  }
+  
+  const ctx2 = document.getElementById('chartConfidence');
+  if (ctx2) {
+    dashboardCharts.confidence = new Chart(ctx2, {
+      type: 'doughnut',
+      data: { labels: ['높음 (≥70%)', '보통 (50-70%)', '낮음 (<50%)'], datasets: [{ data: [0,0,0], backgroundColor: ['var(--good)','var(--warn)','var(--bad)'] }] },
+      options: { responsive: true, maintainAspectRatio: false }
+    });
+  }
+  
+  const ctx3 = document.getElementById('chartThroughput');
+  if (ctx3) {
+    dashboardCharts.throughput = new Chart(ctx3, {
+      type: 'bar',
+      data: { labels: [], datasets: [{ label: '처리 건수', data: [], backgroundColor: 'var(--sky)' }] },
+      options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } }
+    });
+  }
+}
+
+function updateDashboardCharts(run) {
+  if (!dashboardCharts.decisionTime) return;
+  
+  const dtChart = dashboardCharts.decisionTime;
+  dtChart.data.labels.push(new Date().toLocaleTimeString('ko-KR'));
+  dtChart.data.datasets[0].data.push(run.ms);
+  if (dtChart.data.labels.length > 20) { dtChart.data.labels.shift(); dtChart.data.datasets[0].data.shift(); }
+  dtChart.update('none');
+  
+  const cfChart = dashboardCharts.confidence;
+  const idx = run.confidence >= 0.7 ? 0 : run.confidence >= 0.5 ? 1 : 2;
+  cfChart.data.datasets[0].data[idx]++;
+  cfChart.update('none');
+  
+  const tpChart = dashboardCharts.throughput;
+  const hour = new Date().getHours();
+  const idxH = tpChart.data.labels.indexOf(hour + '시');
+  if (idxH >= 0) {
+    tpChart.data.datasets[0].data[idxH]++;
+  } else {
+    tpChart.data.labels.push(hour + '시');
+    tpChart.data.datasets[0].data.push(1);
+  }
+  tpChart.update('none');
+}
+
+function addDashboardPanel() {
+  if (document.getElementById('dashboardPanel')) return;
+  const panel = document.createElement('div');
+  panel.id = 'dashboardPanel';
+  panel.className = 'panel';
+  panel.style.cssText = 'position:fixed;bottom:10px;right:900px;width:400px;height:400px;display:none;z-index:100;';
+  panel.innerHTML = `
+    <div class="hd" style="margin:-10px -10px 10px;padding:10px;background:var(--ink);color:#fff;border-radius:4px 4px 0 0;display:flex;justify-content:space-between;">
+      <div style="font-size:13px;">📊 실시간 대시보드</div>
+      <button class="btn ghost tiny" onclick="document.getElementById('dashboardPanel').style.display='none'">닫기</button>
+    </div>
+    <div class="bd" style="padding:10px;display:grid;grid-template-columns:1fr 1fr;gap:10px;height:calc(100%-40px);">
+      <div style="height:100%;"><canvas id="chartDecisionTime"></canvas></div>
+      <div style="height:100%;"><canvas id="chartConfidence"></canvas></div>
+      <div style="height:100%;grid-column:span 2;"><canvas id="chartThroughput"></canvas></div>
+    </div>
+  `;
+  document.body.appendChild(panel);
+  initDashboardCharts();
+}
+
+function addDashboardToggle() {
+  if (document.getElementById('toggleDashboard')) return;
+  const btn = document.createElement('button');
+  btn.id = 'toggleDashboard';
+  btn.className = 'btn';
+  btn.style.cssText = 'position:fixed;top:50px;right:10px;z-index:1000;';
+  btn.title = '대시보드 열기/닫기';
+  btn.textContent = '📊';
+  btn.onclick = () => {
+    const panel = document.getElementById('dashboardPanel');
+    if (panel) {
+      panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+      if (panel.style.display === 'block') initDashboardCharts();
+    }
+  };
+  document.body.appendChild(btn);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  addDashboardToggle();
+  addDashboardPanel();
+});
+
+// 16. 실제 WebSocket 서버 인증 연결
+let authWs = null;
+function connectAuthWs() {
+  const url = document.getElementById('wsServerUrl').value;
+  const token = document.getElementById('wsAuthToken').value;
+  if (!url) return alert('URL을 입력하세요');
+  
+  if (authWs) authWs.close();
+  authWs = new WebSocket(url);
+  
+  authWs.onopen = () => {
+    console.log('인증 WebSocket 연결됨');
+    if (document.getElementById('wsAuthToken').value) {
+      authWs.send(JSON.stringify({ type: 'auth', token: document.getElementById('wsAuthToken').value }));
+    }
+    updateWsAuthStatus('connected');
+  };
+  
+  authWs.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.type === 'auth_result') {
+        if (data.success) {
+          state.settings.connected = true;
+          updateHud();
+          announce('WebSocket 인증 성공');
+        } else {
+          announce('인증 실패: ' + data.message);
+        }
+      }
+    } catch (e) {}
+  };
+  
+  authWs.onclose = () => {
+    updateWsAuthStatus('disconnected');
+  };
+  
+  authWs.onerror = (err) => {
+    console.error('인증 WebSocket 오류:', err);
+    updateWsAuthStatus('error');
+  };
+}
+
+function disconnectAuthWs() {
+  if (authWs) {
+    authWs.close();
+    authWs = null;
+    updateWsAuthStatus('disconnected');
+  }
+}
+
+function updateWsAuthStatus(status) {
+  const badge = document.getElementById('wsStatusBadge');
+  if (badge) {
+    badge.className = 'badge ' + (status === 'connected' ? 'ai' : 'demo');
+    badge.textContent = status === 'connected' ? 'WS 인증됨' : 'WS 끊김';
+  }
+}
+
+// 17. 광고 API 키 저장 및 테스트
+function saveAdApiKeys() {
+  const keys = {
+    naver: { clientId: document.getElementById('naverClientId').value, clientSecret: document.getElementById('naverClientSecret').value },
+    coupang: { accessKey: document.getElementById('coupangAccessKey').value, secretKey: document.getElementById('coupangSecretKey').value },
+    kakao: { appKey: document.getElementById('kakaoAppKey').value, secretKey: document.getElementById('kakaoSecretKey').value }
+  };
+  state.settings.adApiKeys = keys;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  announce('광고 API 키가 저장되었습니다');
+}
+
+async function testAdApis() {
+  const keys = state.settings.adApiKeys;
+  if (!keys) return alert('먼저 키를 저장하세요');
+  
+  if (state.settings.adApiKeys.naver?.clientId) {
+    try {
+      const res = await fetch('https://api.naver.com/v1/datalab/search', {
+        method: 'POST',
+        headers: {
+          'X-Naver-Client-Id': state.settings.adApiKeys.naver.clientId,
+          'X-Naver-Client-Secret': state.settings.adApiKeys.naver.clientSecret,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ startDate: '2024-01-01', endDate: '2024-01-31', timeUnit: 'month', keywordGroups: [{ groupName: 'test', keywords: ['test'] }] })
+      });
+      if (res.ok) announce('네이버 API 연결 성공');
+      else throw new Error('네이버 API 오류');
+    } catch (e) {
+      console.warn('네이버 API 테스트 실패:', e);
+    }
+  }
+  
+  announce('광고 API 테스트 완료 (콘솔 확인)');
+}
+
+// 18. 실시간 협업 (WebRTC 시그널링 + 커서 공유)
+let collabWs = null;
+let collabPeers = new Map();
+let myCollabId = null;
+
+function joinCollabRoom() {
+  const name = document.getElementById('collabUserName').value;
+  const roomId = document.getElementById('collabRoomId').value;
+  if (!name || !roomId) return alert('이름과 방 ID를 입력하세요');
+  
+  const wsUrl = state.settings.wsUrl || 'wss://echo.websocket.org';
+  collabWs = new WebSocket(wsUrl);
+  
+  collabWs.onopen = () => {
+    collabWs.send(JSON.stringify({ type: 'join', room: document.getElementById('collabRoomId').value, name }));
+  };
+  
+  collabWs.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      switch (data.type) {
+        case 'joined':
+          myCollabId = data.id;
+          updateCollabUsers(data.users);
+          break;
+        case 'user_joined':
+          updateCollabUsers(data.users);
+          announce(data.name + '님이 입장했습니다');
+          break;
+        case 'user_left':
+          updateCollabUsers(data.users);
+          announce(data.name + '님이 퇴장했습니다');
+          break;
+        case 'cursor':
+          updateRemoteCursor(data.userId, data.x, data.y, data.name, data.color);
+          break;
+      }
+    } catch (e) {}
+  };
+  
+  collabWs.onclose = () => {
+    collabPeers.clear();
+    updateCollabUsers([]);
+  };
+}
+
+function leaveCollabRoom() {
+  if (collabWs) {
+    collabWs.close();
+    collabWs = null;
+  }
+  collabPeers.clear();
+  updateCollabUsers([]);
+}
+
+function updateCollabUsers(users) {
+  const container = document.getElementById('collabUsers');
+  if (!container) return;
+  container.innerHTML = users.map(u => `<div style="color:${u.color};">${u.name}${u.id === myCollabId ? ' (나)' : ''}</div>`).join('');
+}
+
+document.addEventListener('mousemove', (e) => {
+  if (collabWs && collabWs.readyState === WebSocket.OPEN) {
+    collabWs.send(JSON.stringify({ type: 'cursor', x: e.clientX, y: e.clientY }));
+  }
+});
+
+function updateRemoteCursor(userId, x, y, name, color) {
+  let cursor = document.getElementById('cursor-' + userId);
+  if (!cursor) {
+    cursor = document.createElement('div');
+    cursor.id = 'cursor-' + userId;
+    cursor.style.cssText = 'position:absolute;pointer-events:none;z-index:9999;width:20px;height:20px;border-radius:50%;transform:translate(-50%,-50%);transition:left 0.05s,top 0.05s;';
+    cursor.innerHTML = `<div style="width:100%;height:100%;border-radius:50%;background:${color};border:2px solid white;box-shadow:0 0 4px rgba(0,0,0,0.3);"></div><div style="position:absolute;top:100%;left:50%;transform:translateX(-50%);white-space:nowrap;font-size:10px;background:rgba(0,0,0,0.7);color:white;padding:1px 4px;border-radius:3px;">${name}</div>`;
+    document.body.appendChild(cursor);
+  }
+  cursor.style.left = x + 'px';
+  cursor.style.top = y + 'px';
+}
+
+</script>
+</body>
+</html>

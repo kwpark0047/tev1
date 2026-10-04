@@ -1,0 +1,113 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: tev1-app-monitor
+  namespace: tev1
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: tev1
+      component: server
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+  namespaceSelector:
+    matchNames:
+      - tev1
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tev1-grafana-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  tev1-dashboard.json: |
+    {
+      "dashboard": {
+        "title": "TEV1 Server Metrics",
+        "uid": "tev1-server",
+        "tags": ["tev1", "nodejs", "websocket"],
+        "timezone": "browser",
+        "panels": [
+          {
+            "title": "HTTP Requests Rate",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "rate(http_requests_total{job=\"tev1-app\"}[5m])",
+                "legendFormat": "{{method}} {{path}} {{status}}"
+              }
+            ]
+          },
+          {
+            "title": "WebSocket Connections",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "websocket_connections_active{job=\"tev1-app\"}",
+                "legendFormat": "Active Connections"
+              }
+            ]
+          },
+          {
+            "title": "Memory Usage",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "container_memory_usage_bytes{pod=~\"tev1-app-.*\"} / container_spec_memory_limit_bytes{pod=~\"tev1-app-.*\"} * 100",
+                "legendFormat": "Memory %"
+              }
+            ]
+          },
+          {
+            "title": "CPU Usage",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "rate(container_cpu_usage_seconds_total{pod=~\"tev1-app-.*\"}[5m]) * 100",
+                "legendFormat": "CPU %"
+              }
+            ]
+          },
+          {
+            "title": "Database Pool",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "pg_pool_total{job=\"tev1-app\"}",
+                "legendFormat": "Total"
+              },
+              {
+                "expr": "pg_pool_idle{job=\"tev1-app\"}",
+                "legendFormat": "Idle"
+              },
+              {
+                "expr": "pg_pool_waiting{job=\"tev1-app\"}",
+                "legendFormat": "Waiting"
+              }
+            ]
+          },
+          {
+            "title": "Redis Memory",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "redis_memory_used_bytes{job=\"tev1-redis\"} / redis_memory_max_bytes{job=\"tev1-redis\"} * 100",
+                "legendFormat": "Redis Memory %"
+              }
+            ]
+          }
+        ],
+        "time": {
+          "from": "now-1h",
+          "to": "now"
+        },
+        "refresh": "30s"
+      }
+    }

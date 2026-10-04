@@ -1,0 +1,39 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: tev1
+
+resources:
+- namespace.yaml
+- configmap.yaml
+- secret.yaml
+- deployment.yaml
+- service.yaml
+- ingress.yaml
+- rbac.yaml
+- hpa.yaml
+- servicemonitor.yaml
+
+commonLabels:
+  app: tev1-ws
+  managed-by: kustomize
+
+images:
+- name: tev1-ws
+  newName: ghcr.io/your-org/tev1-ws
+  newTag: latest
+
+configMapGenerator:
+- name: tev1-ws-config
+  behavior: merge
+  literals:
+    - NODE_ENV=production
+    - PORT=8081
+    - LOG_LEVEL=info
+
+secretGenerator:
+- name: tev1-ws-secrets
+  literals:
+    - JWT_SECRET=CHANGE_THIS_IN_PRODUCTION
+    - REDIS_PASSWORD=CHANGE_THIS_REDIS_PASSWORD
+EOF

@@ -1,0 +1,19 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: tev1-ws-monitor
+  namespace: tev1
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: tev1-ws
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+    scheme: http
+  namespaceSelector:
+    matchNames:
+    - tev1

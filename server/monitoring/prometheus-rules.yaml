@@ -1,0 +1,118 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: tev1-ws-alerts
+  namespace: tev1
+  labels:
+    release: prometheus
+spec:
+  groups:
+  - name: tev1-ws.rules
+    rules:
+    # High connection count
+    - alert: TEV1WSHighConnections
+      expr: sum(websocket_connections) > 10000
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High WebSocket connections on tev1-ws"
+        description: "Total WebSocket connections ({{ $value }}) exceeded 10000 for 5 minutes"
+
+    # High connection rate
+    - alert: TEV1WSHighConnectionRate
+      expr: rate(websocket_connections_total[5m]) > 100
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High WebSocket connection rate"
+        description: "Connection rate is {{ $value }}/s"
+
+    # High error rate
+    - alert: TEV1WSHighErrorRate
+      expr: |
+        sum(rate(websocket_errors_total[5m])) / sum(rate(websocket_requests_total[5m])) > 0.05
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: "High WebSocket error rate"
+        description: "Error rate is {{ $value | humanizePercentage }}"
+
+    # High latency
+    - alert: TEV1WSHighLatency
+      expr: |
+        histogram_quantile(0.95, sum(rate(websocket_message_duration_seconds_bucket[5m])) by (le)) > 1
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High WebSocket message latency"
+        description: "P95 latency is {{ $value }}s"
+
+    # Pod restarts
+    - alert: TEV1WSPodRestarting
+      expr: |
+        increase(kube_pod_container_status_restarts_total{namespace="tev1", container="tev1-ws"}[15m]) > 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "tev1-ws pod restarting"
+        description: "Pod {{ $labels.pod }} has restarted"
+
+    # High memory usage
+    - alert: TEV1WSHighMemoryUsage
+      expr: |
+        (container_memory_usage_bytes{namespace="tev1", container="tev1-ws"} / container_spec_memory_limit_bytes{namespace="tev1", container="tev1-ws"}) > 0.85
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High memory usage on tev1-ws"
+        description: "Memory usage is {{ $value | humanizePercentage }} of limit"
+
+    # High CPU usage
+    - alert: TEV1WSHighCPUUsage
+      expr: |
+        (sum(rate(container_cpu_usage_seconds_total{namespace="tev1", container="tev1-ws"}[5m])) / sum(container_spec_cpu_quota{namespace="tev1", container="tev1-ws"}/container_spec_cpu_period{namespace="tev1", container="tev1-ws"})) > 0.8
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High CPU usage on tev1-ws"
+        description: "CPU usage is {{ $value | humanizePercentage }} of limit"
+
+    # Pod not ready
+    - alert: TEV1WSPodNotReady
+      expr: |
+        kube_pod_status_ready{namespace="tev1", pod=~"tev1-ws-.*"} == 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "tev1-ws pod not ready"
+        description: "Pod {{ $labels.pod }} has been not ready for 5 minutes"
+
+    # HPA scaling
+    - alert: TEV1WSHPAScaleUp
+      expr: |
+        kube_hpa_status_desired_replicas{namespace="tev1", horizontalpodautoscaler="tev1-ws-hpa"} > kube_hpa_status_current_replicas{namespace="tev1", horizontalpodautoscaler="tev1-ws-hpa"}
+      for: 5m
+      labels:
+        severity: info
+      annotations:
+        summary: "HPA scaling up"
+        description: "HPA is scaling up from {{ $value }} replicas"
+
+    # Certificate expiry
+    - alert: TEV1CertExpiringSoon
+      expr: |
+        certmanager_certificate_expiration_timestamp_seconds - time() < 86400 * 30
+      for: 1h
+      labels:
+        severity: warning
+      annotations:
+        summary: "Certificate expiring soon"
+        description: "Certificate {{ $labels.certificate }} expires in {{ $value | humanizeDuration }}"
