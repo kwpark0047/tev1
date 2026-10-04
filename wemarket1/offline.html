@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TEV1 · 오프라인</title>
+<style>
+  body{background:#12131f;color:#f5f2e6;font-family:"Pretendard","Malgun Gothic",system-ui,sans-serif;
+       display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:20px}
+  .box{max-width:420px;text-align:center;background:#272b45;border:2px solid #4d5378;border-radius:4px;padding:28px}
+  h1{font-size:20px;margin:0 0 10px}
+  p{color:#c3c8ea;line-height:1.7;margin:0 0 18px}
+  button{background:#e7b13c;color:#191b2e;border:0;border-radius:3px;padding:9px 18px;font-size:14px;cursor:pointer}
+</style>
+</head>
+<body>
+  <div class="box">
+    <h1>오프라인 상태입니다</h1>
+    <p>네트워크 연결이 없어 화면을 표시할 수 없습니다.<br>연결이 복구되면 자동 재시도됩니다.</p>
+    <button onclick="location.reload()">다시 시도</button>
+  </div>
+</body>
+</html>

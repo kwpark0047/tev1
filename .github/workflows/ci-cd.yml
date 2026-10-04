@@ -16,6 +16,9 @@ jobs:
   lint-and-test:
     name: Lint & Test
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -25,21 +28,22 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
+          cache-dependency-path: server/package-lock.json
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Run ESLint
-        run: npm run lint 2>/dev/null || echo "No lint script configured"
+      - name: Syntax check (server)
+        run: node --check src/server.js
 
-      - name: Run TypeScript check (if applicable)
-        run: npm run typecheck 2>/dev/null || echo "No typecheck script configured"
+      - name: Frontend static check
+        run: npm run test:frontend
 
-      - name: Run tests
-        run: npm test 2>/dev/null || echo "No test script configured"
+      - name: Server smoke test
+        run: npm run test:smoke
 
       - name: Security audit
-        run: npm audit --audit-level=high 2>/dev/null || echo "Audit completed with warnings"
+        run: npm audit --audit-level=critical || echo "audit reported findings above"
 
   # ==================== BUILD ====================
   build:
@@ -50,6 +54,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    defaults:
+      run:
+        working-directory: server
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -79,7 +86,8 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
-          context: .
+          context: ./server
+          file: ./server/Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

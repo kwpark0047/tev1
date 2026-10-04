@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Test output
+coverage/
+.nyc_output/
+
+# Docker / runtime
+.docker/
+pids/
+*.pid
+*.pid.lock
+
+# TLS certificates generated at deploy time
+server/certbot/
+server/nginx/certs/
+
+# Local scratch
+.cache/
+.tmp/

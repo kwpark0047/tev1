@@ -1,0 +1,117 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tev1-staging-postgres
+    environment:
+      POSTGRES_DB: tev1_staging
+      POSTGRES_USER: tev1
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-staging_secure_pass}
+    volumes:
+      - staging_postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tev1 -d tev1_staging"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tev1-staging-network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: tev1-staging-redis
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
+    volumes:
+      - staging_redis_data:/data
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - tev1-staging-network
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tev1-staging-app
+    environment:
+      NODE_ENV: staging
+      PORT: 8081
+      DATABASE_URL: postgresql://tev1:${POSTGRES_PASSWORD:-staging_secure_pass}@postgres:5432/tev1_staging
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-staging-secret-change-me}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      GOOGLE_REDIRECT_URI: https://staging.tev1.example.com/api/auth/google/callback
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY}
+      FRONTEND_URL: https://staging.tev1.example.com
+      CORS_ORIGIN: https://staging.tev1.example.com
+      LOG_LEVEL: debug
+    ports:
+      - "8082:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+    networks:
+      - tev1-staging-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+  nginx:
+    image: nginx:alpine
+    container_name: tev1-staging-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/staging.conf:/etc/nginx/nginx.conf:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+    depends_on:
+      - app
+    networks:
+      - tev1-staging-network
+    restart: unless-stopped
+
+  certbot:
+    image: certbot/certbot
+    container_name: tev1-staging-certbot
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done'"
+    networks:
+      - tev1-staging-network
+
+volumes:
+  staging_postgres_data:
+  staging_redis_data:
+
+networks:
+  tev1-staging-network:
+    driver: bridge

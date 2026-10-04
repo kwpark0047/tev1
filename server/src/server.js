@@ -1,7 +1,6 @@
 require('dotenv').config();
 const express = require('express');
 const http = require('http');
-const WebSocket = require('ws');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const cors = require('cors');
@@ -13,10 +12,15 @@ const { Server } = require('socket.io');
 const app = express();
 const server = http.createServer(app);
 
+// Express 미들웨어 (누락 시 모든 POST/PATCH/DELETE body 파싱이 실패한다)
+app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true }));
+
 const io = new Server(server, {
   cors: {
     origin: process.env.CORS_ORIGIN || '*',
-    methods: ['GET', 'POST']
+    methods: ['GET', 'POST', 'PATCH', 'DELETE']
   }
 });
 
@@ -38,7 +42,19 @@ const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
     return Math.min(times * 200, 2000);
   },
   lazyConnect: true,
+  // Redis가 없어도 프로세스가 죽지 않도록 에러를 흡수한다
+  retryOnFailure: false,
 });
+
+// ioredis는 error 핸들러가 없으면 unhandled error로 프로세스를 죽인다
+redis.on('error', (err) => {
+  if (redisAvailable) {
+    console.warn('Redis error:', err.message);
+  }
+  redisAvailable = false;
+});
+redis.on('end', () => { redisAvailable = false; });
+redis.on('ready', () => { redisAvailable = true; });
 
 // Track DB/Redis availability
 let dbAvailable = false;
@@ -61,8 +77,16 @@ async function checkDatabaseHealth() {
 // Health check for Redis
 async function checkRedisHealth() {
   try {
-    if (!redisAvailable) {
+    // 이미 연결 중이거나 연결된 경우 connect()를 다시 부르면 예외가 된다
+    if (redis.status !== 'ready' && redis.status !== 'connecting') {
       await redis.connect();
+    }
+    if (redis.status !== 'ready') {
+      // connect()가 완료될 때까지 대기 (타임아웃 적용)
+      await Promise.race([
+        new Promise((resolve) => redis.once('ready', resolve)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Redis connect timeout')), 3000)),
+      ]);
     }
     await redis.ping();
     redisAvailable = true;
@@ -196,35 +220,36 @@ async function setupDatabase() {
           color VARCHAR(7) NOT NULL,
           created_at TIMESTAMP DEFAULT NOW()
         );
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'offline';
         CREATE TABLE IF NOT EXISTS rooms (
           id VARCHAR(255) PRIMARY KEY,
           name VARCHAR(255) NOT NULL,
           created_at TIMESTAMP DEFAULT NOW()
         );
         CREATE TABLE IF NOT EXISTS room_users (
-          room_id VARCHAR(255) REFERENCES rooms(id),
-          user_id VARCHAR(255) REFERENCES users(id),
+          room_id VARCHAR(255) REFERENCES rooms(id) ON DELETE CASCADE,
+          user_id VARCHAR(255) REFERENCES users(id) ON DELETE CASCADE,
           joined_at TIMESTAMP DEFAULT NOW(),
           PRIMARY KEY (room_id, user_id)
         );
         CREATE TABLE IF NOT EXISTS messages (
           id SERIAL PRIMARY KEY,
-          room_id VARCHAR(255) REFERENCES rooms(id),
-          user_id VARCHAR(255) REFERENCES users(id),
+          room_id VARCHAR(255) REFERENCES rooms(id) ON DELETE CASCADE,
+          user_id VARCHAR(255) REFERENCES users(id) ON DELETE SET NULL,
           content TEXT NOT NULL,
           created_at TIMESTAMP DEFAULT NOW()
         );
         CREATE TABLE IF NOT EXISTS cursors (
-          id SERIAL PRIMARY KEY,
-          room_id VARCHAR(255) REFERENCES rooms(id),
-          user_id VARCHAR(255) REFERENCES users(id),
+          room_id VARCHAR(255) NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+          user_id VARCHAR(255) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
           x INTEGER NOT NULL,
           y INTEGER NOT NULL,
-          updated_at TIMESTAMP DEFAULT NOW()
+          updated_at TIMESTAMP DEFAULT NOW(),
+          PRIMARY KEY (room_id, user_id)
         );
         CREATE TABLE IF NOT EXISTS user_tokens (
           id SERIAL PRIMARY KEY,
-          user_id VARCHAR(255) REFERENCES users(id),
+          user_id VARCHAR(255) REFERENCES users(id) ON DELETE CASCADE,
           provider VARCHAR(50) NOT NULL,
           access_token TEXT NOT NULL,
           refresh_token TEXT,
@@ -320,29 +345,85 @@ async function setupDatabase() {
     dbAvailable = false;
   }
   
-  // Try Redis connection
-  try {
-    await redis.connect();
-    redisAvailable = true;
+  // Try Redis connection (헬스체크 헬퍼가 상태 전이를 처리한다)
+  if (await checkRedisHealth()) {
     console.log('Redis connected');
-  } catch (e) {
-    console.warn('Redis unavailable, running without cache:', e.message);
+  } else {
+    console.warn('Redis unavailable, running without cache');
     redisAvailable = false;
   }
 }
 
-// Socket.IO Redis adapter for scaling
+// 스키마 초기화 (DB 미가용이어도 서버는 계속 기동)
+setupDatabase().catch((e) => {
+  console.error('setupDatabase failed:', e.message);
+  dbAvailable = false;
+});
+
+// Socket.IO Redis adapter for scaling (Redis 가용 시에만 활성화)
 (async () => {
-  const pubClient = redis.duplicate();
-  const subClient = redis.duplicate();
-  io.adapter(createAdapter(pubClient, subClient));
+  const redisOk = await checkRedisHealth();
+  if (!redisOk) {
+    console.warn('Redis adapter disabled - running single-node Socket.IO');
+    return;
+  }
+  try {
+    const pubClient = redis.duplicate();
+    const subClient = redis.duplicate();
+    io.adapter(createAdapter(pubClient, subClient));
+    console.log('Socket.IO Redis adapter enabled');
+  } catch (e) {
+    console.warn('Redis adapter setup failed:', e.message);
+  }
 })();
 
-// In-memory storage (fallback)
-const rooms = new Map(); // roomId -> { users: Map, cursors: Map }
-const userConnections = new Map(); // ws -> { userId, roomId, name, color }
+// In-memory presence (실시간 커서/참가자 상태)
+// 방 상태는 Redis로 공유하며, Redis 미가용 시 이 맵을 사용한다
+const rooms = new Map(); // roomId -> { users: Map<userId, {id,name,color}>, cursors: Map<userId,{x,y}> }
 
 const JWT_SECRET = process.env.JWT_SECRET || 'tev1-secret-key-change-in-production';
+
+// JWT를 Authorization 헤더 또는 쿼리/바디에서 추출한다
+function extractToken(req) {
+  const header = req.headers.authorization || req.headers.Authorization;
+  if (header && typeof header === 'string' && header.startsWith('Bearer ')) {
+    return header.slice(7).trim();
+  }
+  if (req.query && typeof req.query.token === 'string') return req.query.token;
+  if (req.body && typeof req.body.token === 'string') return req.body.token;
+  return null;
+}
+
+// 인증 필수 미들웨어: userId를 쿼리스트링으로 신뢰하지 않고 JWT에서만 읽는다
+function requireAuth(req, res, next) {
+  const token = extractToken(req);
+  if (!token) {
+    return res.status(401).json({ error: 'Authentication required', code: 'NO_TOKEN' });
+  }
+  const decoded = verifyToken(token);
+  if (!decoded) {
+    return res.status(401).json({ error: 'Invalid or expired token', code: 'INVALID_TOKEN' });
+  }
+  req.user = { id: decoded.userId, name: decoded.name };
+  // 하위 핸들러가 기존 userId 파라미터를 쓰므로 덮어써 신뢰 경로를 제거한다
+  if (req.query) req.query.userId = decoded.userId;
+  if (req.body) req.body.userId = decoded.userId;
+  next();
+}
+
+// DB 필요 미들웨어: 가용하지 않으면 500이 아니라 503으로 명확히 알린다
+function requireDb(req, res, next) {
+  if (!dbAvailable) {
+    return res.status(503).json({ error: 'Database unavailable', code: 'DB_UNAVAILABLE' });
+  }
+  next();
+}
+
+// 운영 환경에서 약한 기본 비밀키 사용을 경고한다
+if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET must be set in production');
+  process.exit(1);
+}
 
 // Generate random color for user
 function getRandomColor() {
@@ -367,139 +448,176 @@ function verifyToken(token) {
   }
 }
 
-// Broadcast to room via Socket.IO
-function broadcastToRoomViaIO(roomId, message) {
-  io.to(`room-${roomId}`).emit('message', message);
-}
-
-// Broadcast to all via Socket.IO
-function broadcastToAllViaIO(message) {
-  io.emit('message', message);
-}
-
 // Store message in DB
 async function storeMessage(roomId, userId, content) {
+  if (!dbAvailable) return false;
   try {
     await pool.query(
       'INSERT INTO messages (room_id, user_id, content) VALUES ($1, $2, $3)',
       [roomId, userId, content]
     );
-    // Broadcast to room via Socket.IO
-    broadcastToRoomViaIO(roomId, {
-      type: 'message',
-      roomId,
-      userId,
-      content,
-      timestamp: Date.now()
-    });
+    return true;
   } catch (e) {
-    console.error('Error storing message:', e);
+    console.error('Error storing message:', e.message);
+    dbAvailable = false;
+    return false;
+  }
+}
+
+// 방 보장 (rooms 테이블에 없으면 생성) - 분석/조직 API가 참조하는 원본 데이터
+async function ensureRoomRow(roomId, roomName) {
+  if (!dbAvailable) return;
+  try {
+    await pool.query(
+      'INSERT INTO rooms (id, name) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name',
+      [roomId, roomName || roomId]
+    );
+  } catch (e) {
+    console.error('ensureRoomRow failed:', e.message);
   }
 }
 
 // Handle new connection
 io.on('connection', (socket) => {
-  console.log('Socket.IO connection:', socket.id);
+  socket.data.peerConnections = new Map();
 
+  // 인증: JWT 검증 후 방 입장 + 존재 보장
   socket.on('auth', async (data) => {
+    const decoded = verifyToken(data && data.token);
+    if (!decoded) {
+      socket.emit('auth_error', { message: 'Invalid token' });
+      socket.disconnect(true);
+      return;
+    }
+
+    const roomId = data.roomId || 'default';
     try {
-      const decoded = verifyToken(data.token);
-      if (decoded) {
-        socket.userId = decoded.userId;
-        socket.userName = decoded.name;
-        socket.roomId = data.roomId;
+      socket.userId = decoded.userId;
+      socket.userName = decoded.name;
+      socket.roomId = roomId;
 
-        // Check if user exists, if not create
-        const userExists = await pool.query(
-          'SELECT id FROM users WHERE id = $1',
-          [decoded.userId]
-        );
-
-        if (userExists.rows.length === 0) {
-          const color = getRandomColor();
+      // 사용자 색상 조회/생성 (TDZ 버그 없이 결정)
+      let color;
+      if (dbAvailable) {
+        const existing = await pool.query('SELECT color FROM users WHERE id = $1', [decoded.userId]);
+        if (existing.rows.length === 0) {
+          color = getRandomColor();
           await pool.query(
-            'INSERT INTO users (id, name, color) VALUES ($1, $2, $3)',
-            [decoded.userId, decoded.name, color]
+            'INSERT INTO users (id, name, color, status) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING',
+            [decoded.userId, decoded.name, color, 'online']
           );
+          const reread = await pool.query('SELECT color FROM users WHERE id = $1', [decoded.userId]);
+          color = reread.rows[0] ? reread.rows[0].color : color;
+        } else {
+          color = existing.rows[0].color;
+          await pool.query('UPDATE users SET status = $1 WHERE id = $2', ['online', decoded.userId]);
         }
-
-        // Join room
-        socket.join(`room-${data.roomId}`);
-
-        // Add to in-memory rooms
-        if (!rooms.has(data.roomId)) {
-          rooms.set(data.roomId, { users: new Map(), cursors: new Map() });
-        }
-        const room = rooms.get(data.roomId);
-        const color = color || getRandomColor();
-        room.users.set(socket.userId, { id: decoded.userId, name: decoded.name, color });
-
-        // Notify user joined
-        socket.emit('joined', {
-          id: decoded.userId,
-          name: decoded.name,
-          color,
-          users: Array.from(room.users.values()).map(u => ({ id: u.id, name: u.name, color: u.color }))
-        });
-
-        // Notify others
-        socket.to(`room-${data.roomId}`).emit('user_joined', {
-          userId: decoded.userId,
-          name: decoded.name,
-          color,
-          users: Array.from(room.users.values()).map(u => ({ id: u.id, name: u.name, color: u.color }))
-        });
-
-        // Get existing cursors from DB
-        const cursors = await pool.query(
-          'SELECT user_id, x, y FROM cursors WHERE room_id = $1',
-          [data.roomId]
-        );
-        cursors.rows.forEach(cursor => {
-          room.cursors.set(cursor.user_id, { x: cursor.x, y: cursor.y });
-        });
-
-        // Broadcast existing cursors
-        io.to(`room-${data.roomId}`).emit('cursor_broadcast', {
-          cursors: Array.from(room.cursors.entries()).map(([uid, pos]) => ({
-            userId: uid,
-            x: pos.x,
-            y: pos.y
-          }))
-        });
-
-        console.log(`User ${decoded.name} (${decoded.userId}) joined room ${data.roomId}`);
       } else {
-        socket.emit('auth_error', { message: 'Invalid token' });
-        socket.disconnect();
+        color = getRandomColor();
+      }
+
+      await ensureRoomRow(roomId, decoded.name ? `${decoded.name}의 회의` : roomId);
+
+      socket.join(`room-${roomId}`);
+
+      if (!rooms.has(roomId)) {
+        rooms.set(roomId, { users: new Map(), cursors: new Map() });
+      }
+      const room = rooms.get(roomId);
+      room.users.set(decoded.userId, { id: decoded.userId, name: decoded.name, color });
+
+      if (dbAvailable) {
+        await pool.query(
+          'INSERT INTO room_users (room_id, user_id) VALUES ($1, $2) ON CONFLICT (room_id, user_id) DO NOTHING',
+          [roomId, decoded.userId]
+        );
+      }
+
+      const users = Array.from(room.users.values()).map((u) => ({ id: u.id, name: u.name, color: u.color }));
+
+      socket.emit('joined', { id: decoded.userId, name: decoded.name, color, users });
+      socket.to(`room-${roomId}`).emit('user_joined', {
+        userId: decoded.userId,
+        name: decoded.name,
+        color,
+        users
+      });
+
+      // 저장된 커서 복원 (분석/재접속 대비)
+      if (dbAvailable) {
+        try {
+          const cursors = await pool.query(
+            'SELECT user_id, x, y FROM cursors WHERE room_id = $1',
+            [roomId]
+          );
+          for (const c of cursors.rows) {
+            room.cursors.set(c.user_id, { x: c.x, y: c.y });
+          }
+          socket.emit('cursor_broadcast', {
+            cursors: Array.from(room.cursors.entries()).map(([uid, pos]) => ({
+              userId: uid,
+              x: pos.x,
+              y: pos.y
+            }))
+          });
+        } catch (e) {
+          console.error('cursor restore failed:', e.message);
+        }
       }
     } catch (e) {
       console.error('Auth error:', e);
       socket.emit('auth_error', { message: 'Auth failed' });
-      socket.disconnect();
     }
+  });
+
+  // 인증 없이 방 입장 시도 (기존 클라이언트 호환)
+  socket.on('join', async (data) => {
+    if (socket.userId) return; // 이미 인증됨
+    const roomId = data && data.roomId;
+    if (!roomId) {
+      socket.emit('error', { message: 'roomId required' });
+      return;
+    }
+    socket.roomId = roomId;
+    socket.userId = (data.name || 'guest') + '#' + socket.id.slice(0, 6);
+    socket.userName = data.name || 'guest';
+    socket.join(`room-${roomId}`);
+
+    if (!rooms.has(roomId)) rooms.set(roomId, { users: new Map(), cursors: new Map() });
+    const room = rooms.get(roomId);
+    const color = getRandomColor();
+    room.users.set(socket.userId, { id: socket.userId, name: socket.userName, color });
+    await ensureRoomRow(roomId, `${socket.userName}의 회의`);
+
+    socket.emit('joined', {
+      id: socket.userId,
+      name: socket.userName,
+      color,
+      users: Array.from(room.users.values()).map((u) => ({ id: u.id, name: u.name, color: u.color }))
+    });
   });
 
   socket.on('cursor', (data) => {
     if (!socket.roomId) return;
-
     const room = rooms.get(socket.roomId);
     if (!room) return;
 
-    // Update cursor in room
-    room.cursors.set(socket.userId, { x: data.x, y: data.y });
+    const x = Number(data.x) || 0;
+    const y = Number(data.y) || 0;
+    room.cursors.set(socket.userId, { x, y });
 
-    // Update in DB
-    pool.query(
-      'INSERT INTO cursors (room_id, user_id, x, y, updated_at) VALUES ($1, $2, $3, $4, NOW()) ON CONFLICT (room_id, user_id) DO UPDATE SET x = EXCLUDED.x, y = EXCLUDED.y, updated_at = NOW()',
-      [socket.roomId, socket.userId, data.x, data.y]
-    );
+    if (dbAvailable) {
+      pool.query(
+        'INSERT INTO cursors (room_id, user_id, x, y, updated_at) VALUES ($1, $2, $3, $4, NOW()) ' +
+          'ON CONFLICT (room_id, user_id) DO UPDATE SET x = EXCLUDED.x, y = EXCLUDED.y, updated_at = NOW()',
+        [socket.roomId, socket.userId, x, y]
+      ).catch((e) => console.error('cursor persist failed:', e.message));
+    }
 
-    // Broadcast cursor to others in room
     socket.to(`room-${socket.roomId}`).emit('cursor', {
       userId: socket.userId,
-      x: data.x,
-      y: data.y,
+      x,
+      y,
       name: room.users.get(socket.userId)?.name || 'Unknown',
       color: room.users.get(socket.userId)?.color || '#FFFFFF'
     });
@@ -507,14 +625,11 @@ io.on('connection', (socket) => {
 
   socket.on('message', async (data) => {
     if (!socket.roomId || !socket.userId) return;
+    const content = (data.content || '').toString().slice(0, 4000);
+    if (!content.trim()) return;
 
-    const content = data.content || '';
-    if (!content) return;
+    if (dbAvailable) await storeMessage(socket.roomId, socket.userId, content);
 
-    // Store message in DB
-    await storeMessage(socket.roomId, socket.userId, content);
-
-    // Broadcast to room via Socket.IO
     io.to(`room-${socket.roomId}`).emit('message', {
       type: 'message',
       roomId: socket.roomId,
@@ -525,76 +640,97 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('leave', () => {
-    if (socket.roomId) {
-      socket.leave(`room-${socket.roomId}`);
-
-      // Remove from in-memory rooms
-      if (rooms.has(socket.roomId)) {
-        const room = rooms.get(socket.roomId);
-        room.users.delete(socket.userId);
-        room.cursors.delete(socket.userId);
-
-        // Notify others
-        socket.to(`room-${socket.roomId}`).emit('user_left', {
-          userId: socket.userId,
-          name: socket.userName || 'Unknown'
-        });
-
-        // Clean up empty room
-        if (room.users.size === 0) {
-          rooms.delete(socket.roomId);
+  // ---- WebRTC 시그널링 (offer/answer/ICE relay) ----
+  // 대상 userId가 지정되면 그 소켓에만, 없으면 방 전체에 전달한다.
+  // socket.data에 연결된 userId를 보관해 식별에 사용한다.
+  function emitToPeer(roomId, target, event, payload) {
+    if (target) {
+      for (const [sid, s] of io.sockets.sockets.entries()) {
+        if (s.userId === target) {
+          s.emit(event, payload);
+          return;
         }
       }
-
-      socket.roomId = null;
-      socket.userId = null;
-      socket.userName = null;
     }
+    io.to(`room-${roomId}`).emit(event, payload);
+  }
+
+  socket.on('webrtc-offer', (data) => {
+    if (!socket.roomId) return;
+    emitToPeer(socket.roomId, data && data.to, 'webrtc-offer', {
+      sdp: data && data.sdp,
+      from: socket.userId,
+      fromName: socket.userName
+    });
   });
 
-  socket.on('disconnect', async () => {
-    console.log('Socket.IO disconnect:', socket.id);
-    if (socket.userId && socket.roomId) {
-      // Update status in DB
-      await pool.query(
-        'UPDATE users SET status = \'disconnected\' WHERE id = $1',
-        [socket.userId]
-      );
+  socket.on('webrtc-answer', (data) => {
+    if (!socket.roomId) return;
+    emitToPeer(socket.roomId, data && data.to, 'webrtc-answer', {
+      sdp: data && data.sdp,
+      from: socket.userId,
+      fromName: socket.userName
+    });
+  });
 
-      // Remove from in-memory rooms
-      if (rooms.has(socket.roomId)) {
-        const room = rooms.get(socket.roomId);
-        if (room) {
-          room.users.delete(socket.userId);
-          room.cursors.delete(socket.userId);
+  socket.on('webrtc-ice-candidate', (data) => {
+    if (!socket.roomId) return;
+    emitToPeer(socket.roomId, data && data.to, 'webrtc-ice-candidate', {
+      candidate: data && data.candidate,
+      from: socket.userId
+    });
+  });
 
-          // Notify others
-          socket.to(`room-${socket.roomId}`).emit('user_left', {
-            userId: socket.userId,
-            name: socket.userName || 'Unknown'
-          });
+  // WebRTC 미지원 환경 명시적 처리
+  socket.on('webrtc-unsupported', () => {
+    socket.emit('webrtc-error', { message: 'WebRTC not supported in this browser' });
+  });
 
-          // Clean up empty room
-          if (room.users.size === 0) {
-            rooms.delete(socket.roomId);
-          }
-        }
-      }
+  socket.on('leave', () => leaveCurrentRoom(socket));
 
-      socket.roomId = null;
-      socket.userId = null;
-      socket.userName = null;
+  socket.on('disconnect', () => {
+    const userId = socket.userId;
+    const roomId = socket.roomId;
+    leaveCurrentRoom(socket);
+
+    if (userId && dbAvailable) {
+      pool.query('UPDATE users SET status = $1 WHERE id = $2', ['offline', userId])
+        .catch((e) => console.error('status update failed:', e.message));
     }
   });
 });
+
+// 방 이탈 공통 처리
+function leaveCurrentRoom(socket) {
+  if (!socket.roomId) return;
+  const roomId = socket.roomId;
+  const userId = socket.userId;
+
+  socket.leave(`room-${roomId}`);
+
+  const room = rooms.get(roomId);
+  if (room) {
+    room.users.delete(userId);
+    room.cursors.delete(userId);
+    socket.to(`room-${roomId}`).emit('user_left', {
+      userId,
+      name: socket.userName || 'Unknown',
+      users: Array.from(room.users.values()).map((u) => ({ id: u.id, name: u.name, color: u.color }))
+    });
+    if (room.users.size === 0) rooms.delete(roomId);
+  }
+
+  socket.roomId = null;
+  socket.userId = null;
+  socket.userName = null;
+}
 
 // REST API endpoints
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
     timestamp: Date.now(), 
-    connections: wss.clients.size, 
+    connections: io.engine.clientsCount, 
     socketio: io.engine.clientsCount,
     database: dbAvailable ? 'connected' : 'disconnected',
     redis: redisAvailable ? 'connected' : 'disconnected'
@@ -615,8 +751,7 @@ app.get('/health/detailed', async (req, res) => {
     services: {
       database: { status: dbHealthy ? 'up' : 'down', stats: dbStats },
       redis: { status: redisHealthy ? 'up' : 'down', stats: redisStats },
-      websocket: { connections: wss.clients.size },
-      socketio: { connections: io.engine.clientsCount }
+      socketio: { connections: io.engine.clientsCount, rooms: io.sockets.adapter.rooms.size }
     },
     pool: {
       total: pool.totalCount,
@@ -717,16 +852,52 @@ app.get('/api/rooms/:roomId', async (req, res) => {
 });
 
 // Google Calendar Integration
-const { google } = require('googleapis');
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+// googleapis 패키지가 매우 크므로 기동 시점 로딩을 피하고 실제 사용 시 1회만 로딩한다.
+// (일부 마운트 환경에서는 require가 수십 초 걸려 서버 기동을 전부 지연시킨다)
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:8081/api/auth/google/callback';
+const googleEnabled = Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
 
-const oauth2Client = new google.auth.OAuth2(
-  GOOGLE_CLIENT_ID,
-  GOOGLE_CLIENT_SECRET,
-  GOOGLE_REDIRECT_URI
-);
+let _google = null;
+let _oauth2Client = null;
+
+function googleApi() {
+  if (!_google) _google = require('googleapis').google;
+  return _google;
+}
+
+function oauthClient() {
+  if (!_oauth2Client) {
+    _oauth2Client = googleApi().auth.OAuth2(
+      GOOGLE_CLIENT_ID,
+      GOOGLE_CLIENT_SECRET,
+      GOOGLE_REDIRECT_URI
+    );
+  }
+  return _oauth2Client;
+}
+
+// OAuth 미설정 상태에서는 명확히 503으로 알린다 (무음 실패 방지)
+app.use('/api/auth/google', (req, res, next) => {
+  if (!googleEnabled) {
+    return res.status(503).json({
+      error: 'Google OAuth not configured',
+      code: 'GOOGLE_OAUTH_DISABLED',
+      hint: 'GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET 환경변수를 설정하세요.'
+    });
+  }
+  next();
+});
+app.use('/api/calendar', (req, res, next) => {
+  if (!googleEnabled) {
+    return res.status(503).json({
+      error: 'Google Calendar integration not configured',
+      code: 'GOOGLE_OAUTH_DISABLED'
+    });
+  }
+  next();
+});
 
 // Google OAuth2 URL 생성
 app.get('/api/auth/google/url', (req, res) => {
@@ -734,7 +905,7 @@ app.get('/api/auth/google/url', (req, res) => {
     'https://www.googleapis.com/auth/calendar',
     'https://www.googleapis.com/auth/calendar.events'
   ];
-  const url = oauth2Client.generateAuthUrl({
+  const url = oauthClient().generateAuthUrl({
     access_type: 'offline',
     scope: scopes,
     state: JSON.stringify({ userId: req.query.userId || 'anonymous' })
@@ -748,8 +919,8 @@ app.get('/api/auth/google/callback', async (req, res) => {
   if (!code) return res.status(400).send('Authorization code missing');
 
   try {
-    const { tokens } = await oauth2Client.getToken(code);
-    oauth2Client.setCredentials(tokens);
+    const { tokens } = await oauthClient().getToken(code);
+    oauthClient().setCredentials(tokens);
 
     // 상태 복원 및 사용자 연결
     const stateData = JSON.parse(state || '{}');
@@ -790,13 +961,13 @@ app.post('/api/calendar/events', async (req, res) => {
     }
 
     const tokens = tokenResult.rows[0];
-    oauth2Client.setCredentials({
+    oauthClient().setCredentials({
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
       expiry_date: tokens.expiry
     });
 
-    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+    const calendar = googleApi().calendar({ version: 'v3', auth: oauthClient() });
 
     // 이벤트 생성
     const event = {
@@ -838,13 +1009,13 @@ app.get('/api/calendar/events', async (req, res) => {
     }
 
     const tokens = tokenResult.rows[0];
-    oauth2Client.setCredentials({
+    oauthClient().setCredentials({
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
       expiry_date: tokens.expiry
     });
 
-    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+    const calendar = googleApi().calendar({ version: 'v3', auth: oauthClient() });
 
     const response = await calendar.events.list({
       calendarId: 'primary',
@@ -902,9 +1073,9 @@ app.post('/api/meetings/:meetingId/calendar', async (req, res) => {
 
       if (tokenResult.rows.length > 0) {
         const tokens = tokenResult.rows[0];
-        oauth2Client.setCredentials(tokens);
+        oauthClient().setCredentials(tokens);
 
-        const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+        const calendar = googleApi().calendar({ version: 'v3', auth: oauthClient() });
         const event = {
           summary: meeting.room_name || `회의: ${meetingId}`,
           description: meeting.content || '',
@@ -935,6 +1106,9 @@ app.post('/api/meetings/:meetingId/calendar', async (req, res) => {
 // ============================================
 // 조직(Organization) 관리 API
 // ============================================
+
+// 조직 데이터는 인증 필수이며 DB가 반드시 필요하다
+app.use('/api/organizations', requireAuth, requireDb);
 
 // 조직 생성
 app.post('/api/organizations', async (req, res) => {
@@ -1453,6 +1627,22 @@ initializeSystemRoles().catch(console.error);
 // 푸시 알림 API
 // ============================================
 
+// 푸시 API는 인증 필수 + DB 필요 + VAPID 설정 확인 순서로 검증한다
+// VAPID 공개키 제공 (인증 불필요 - 공개키이므로 노출해도 안전)
+app.get('/api/push/vapid-public-key', (req, res) => {
+  if (!isPushEnabled()) {
+    return res.status(503).json({ error: 'Web Push not configured', code: 'PUSH_DISABLED' });
+  }
+  res.json({ publicKey: VAPID_PUBLIC_KEY });
+});
+
+app.use('/api/push', requireAuth, requireDb, (req, res, next) => {
+  if (!isPushEnabled()) {
+    return res.status(503).json({ error: 'Web Push not configured', code: 'PUSH_DISABLED' });
+  }
+  next();
+});
+
 // Push 구독 저장 테이블 생성 (setupDatabase에 추가 필요)
 const PUSH_SUBSCRIPTIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS push_subscriptions (
@@ -1508,15 +1698,32 @@ app.post('/api/push/unsubscribe', async (req, res) => {
 });
 
 // 푸시 알림 발송 (관리자/시스템용)
-const webpush = require('web-push');
-const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || 'BEl62iUYgUivxIkv69yViEuiBIa40HI80NM9fY7s5eDg8qVhKsLGhQ9k5z';
-const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || 'your-vapid-private-key';
+// web-push도 실제 발송 시점에만 로딩해 기동을 빠르게 유지한다
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:admin@tev1.local';
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || '';
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
+let pushEnabled = false;
 
-webpush.setVapidDetails(
-  'mailto:admin@tev1.local',
-  VAPID_PUBLIC_KEY,
-  VAPID_PRIVATE_KEY
-);
+// 푸시 가드/라우트에서 참조하는 상태 접근자 (선언 순서 무관)
+function isPushEnabled() {
+  return pushEnabled === true;
+}
+
+function webpushApi() {
+  return require('web-push');
+}
+
+if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+  try {
+    webpushApi().setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+    pushEnabled = true;
+    console.log('Web Push enabled');
+  } catch (e) {
+    console.warn('Web Push disabled (invalid VAPID keys):', e.message);
+  }
+} else {
+  console.warn('Web Push disabled (VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY not set)');
+}
 
 // 특정 사용자에게 푸시 발송
 app.post('/api/push/send', async (req, res) => {
@@ -1556,7 +1763,7 @@ app.post('/api/push/send', async (req, res) => {
       });
 
       try {
-        await webpush.sendNotification(pushSubscription, payload);
+        await webpushApi().sendNotification(pushSubscription, payload);
         return { success: true, endpoint: sub.endpoint };
       } catch (e) {
         // 구독 만료 시 삭제
@@ -1609,7 +1816,7 @@ app.post('/api/push/broadcast', async (req, res) => {
       });
 
       try {
-        await webpush.sendNotification(pushSubscription, payload);
+        await webpushApi().sendNotification(pushSubscription, payload);
         return { success: true };
       } catch (e) {
         if (e.statusCode === 410 || e.statusCode === 404) {
@@ -1630,6 +1837,9 @@ app.post('/api/push/broadcast', async (req, res) => {
 // ============================================
 // 분석 대시보드 API
 // ============================================
+
+// 분석 데이터는 조직 구성원 전용이며 DB가 반드시 필요하다
+app.use('/api/analytics', requireAuth, requireDb);
 
 // 회의 통계 요약
 app.get('/api/analytics/meetings/summary', async (req, res) => {
@@ -2035,37 +2245,52 @@ app.get('/metrics', async (req, res) => {
 });
 
 // Graceful shutdown handling
+let shuttingDown = false;
 async function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.log(`Received ${signal}, starting graceful shutdown...`);
-  
-  // Close WebSocket connections
-  wss.clients.forEach(ws => {
-    ws.close(1001, 'Server shutting down');
+
+  // Disconnect Socket.IO clients (ws 레거시 서버는 더 이상 사용하지 않음)
+  io.sockets.sockets.forEach((socket) => {
+    socket.emit('server_shutdown', { reason: signal });
+    socket.disconnect(true);
   });
-  
-  // Close Socket.IO
-  await io.close();
-  
-  // Close HTTP server
-  server.close(async () => {
-    console.log('HTTP server closed');
-    
-    // Close PostgreSQL pool
-    await pool.end();
-    console.log('PostgreSQL pool closed');
-    
-    // Close Redis connection
-    await redis.quit();
-    console.log('Redis connection closed');
-    
-    process.exit(0);
-  });
-  
-  // Force exit after 10 seconds
-  setTimeout(() => {
+
+  const forceExit = setTimeout(() => {
     console.error('Forced shutdown after timeout');
     process.exit(1);
   }, 10000);
+  forceExit.unref();
+
+  // Close Socket.IO + HTTP server
+  await new Promise((resolve) => {
+    io.close(() => {
+      server.close(() => resolve());
+    });
+  });
+  console.log('HTTP/Socket.IO server closed');
+
+  // Close PostgreSQL pool
+  try {
+    await pool.end();
+    console.log('PostgreSQL pool closed');
+  } catch (e) {
+    console.warn('PostgreSQL pool close error:', e.message);
+  }
+
+  // Close Redis only when connected (미연결 시 quit이 멈춘다)
+  if (redisAvailable) {
+    try {
+      await redis.quit();
+      console.log('Redis connection closed');
+    } catch (e) {
+      console.warn('Redis close error:', e.message);
+    }
+  }
+
+  clearTimeout(forceExit);
+  process.exit(0);
 }
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
@@ -2081,13 +2306,17 @@ process.on('unhandledRejection', (reason) => {
 
 // Start server
 const PORT = process.env.PORT || 8081;
+const bootStartedAt = Date.now();
 server.listen(PORT, () => {
-  console.log(`WebSocket server running on port ${PORT}`);
-  console.log(`WebSocket endpoint: ws://localhost:${PORT}`);
-  console.log(`REST API: http://localhost:${PORT}`);
-  console.log(`Socket.IO endpoint: http://localhost:${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log(`Detailed health: http://localhost:${PORT}/health/detailed`);
+  console.log(`Server ready in ${Date.now() - bootStartedAt}ms on port ${PORT}`);
+  console.log(`REST API:      http://localhost:${PORT}`);
+  console.log(`Socket.IO:     http://localhost:${PORT} (ws://localhost:${PORT})`);
+  console.log(`Health:        http://localhost:${PORT}/health`);
+  console.log(`Health detail: http://localhost:${PORT}/health/detailed`);
+  console.log(`Metrics:       http://localhost:${PORT}/metrics`);
+  console.log(`Dependencies:  database=${dbAvailable ? 'connected' : 'unavailable'}, redis=${redisAvailable ? 'connected' : 'unavailable'}`);
+  console.log(`Google OAuth:  ${googleEnabled ? 'enabled' : 'disabled (set GOOGLE_CLIENT_ID/SECRET)'}`);
+  console.log(`Web Push:      ${pushEnabled ? 'enabled' : 'disabled (set VAPID keys)'}`);
 });
 
 module.exports = { app, server, io, pool, redis };

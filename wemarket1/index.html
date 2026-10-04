@@ -4,12 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>tev1 · 픽셀 오피스 의사결정 데스크</title>
-<link rel="manifest" href="data:application/manifest+json,{%22name%22:%22tev1%20%EC%9D%B8%EA%B5%AC%20%EB%8D%B0%EC%8A%A4%ED%81%AC%22,%22short_name%22:%22tev1%22,%22start_url%22:%22.%22,%22display%22:%22standalone%22,%22background_color%22:%22%2523191b2e%22,%22theme_color%22:%22%2523191b2e%22,%22icons%22:[{%22src%22:%22data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==%22,%22sizes%22:%22192x192%22,%22type%22:%22image/png%22}]}>
+<link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#191b2e">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="tev1">
 <link rel="apple-touch-icon" href="icon-192.png">
+<!-- Socket.IO 클라이언트: 서버(기본 8081)와 실시간 통신에 필수 -->
+<script src="http://localhost:8081/socket.io/socket.io.js"></script>
 <style>
 :root{
   --ink:#191b2e;
@@ -2136,7 +2138,7 @@ function runTests() {
     } else {
       results.push('❌ 함수 ' + f + ' 없음');
     }
-  }
+  });
   // 4. HUD 요소 존재
   const hudIds = ['hudCount', 'hudAvg', 'hudCost', 'hudConn', 'modeBadge'];
   hudIds.forEach(id => {
@@ -2145,7 +2147,7 @@ function runTests() {
     } else {
       results.push('❌ HUD 요소 ' + id + ' 없음');
     }
-  }
+  });
   // 결과 출력
   const msgStr = results.join('\\n');
   alert('=== 테스트 결과 ===\\n' + msgStr);
@@ -2189,6 +2191,17 @@ function testOllamaConnection() {
 let currentUser = null;
 let currentToken = null;
 
+// 백엔드 API 베이스 URL (하드코딩 제거)
+function apiBase() {
+  return (typeof TEV1_SERVER_URL !== 'undefined' && TEV1_SERVER_URL)
+    ? TEV1_SERVER_URL
+    : 'http://localhost:8081';
+}
+
+function apiUrl(pathname) {
+  return apiBase() + pathname;
+}
+
 // 인증 UI 업데이트
 function updateAuthUI(isLoggedIn, user = null) {
   const authStatus = document.getElementById('authStatus');
@@ -2229,7 +2242,7 @@ function showLoginPrompt() {
 // 로그인 처리
 async function login(userId, name) {
   try {
-    const response = await fetch('http://localhost:8081/api/auth/login', {
+    const response = await fetch(apiUrl('/api/auth/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId, name })
@@ -2244,7 +2257,7 @@ async function login(userId, name) {
       
       // Socket.IO 인증
       if (socketIO && socketIO.connected) {
-        socketIO.emit('auth', { token: data.token, roomId: 'default' });
+        socketIO.emit('auth', { token: data.token, roomId: currentRoomId() });
       }
       
       updateAuthUI(true, { userId: data.userId, name: data.name });
@@ -2281,7 +2294,7 @@ async function connectGoogleCalendar() {
   }
   
   try {
-    const response = await fetch(`http://localhost:8081/api/auth/google/url?userId=${currentUser.userId}`);
+    const response = await fetch(apiUrl(`/api/auth/google/url?userId=${currentUser.userId}`));
     const data = await response.json();
     
     if (data.url) {
@@ -2311,7 +2324,7 @@ async function checkCalendarConnection() {
   if (!currentUser) return;
   
   try {
-    const response = await fetch(`http://localhost:8081/api/calendar/events?userId=${currentUser.userId}`);
+    const response = await fetch(apiUrl(`/api/calendar/events?userId=${currentUser.userId}`));
     if (response.ok) {
       const data = await response.json();
       msg('ok', 'Google 캘린더 연결됨 (' + (data.events?.length || 0) + '개 일정)');
@@ -2341,7 +2354,7 @@ async function addMeetingToCalendar() {
   if (!endTime) return;
   
   try {
-    const response = await fetch('http://localhost:8081/api/calendar/events', {
+    const response = await fetch(apiUrl('/api/calendar/events'), {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -2381,7 +2394,7 @@ async function viewCalendarEvents() {
   }
   
   try {
-    const response = await fetch(`http://localhost:8081/api/calendar/events?userId=${currentUser.userId}`);
+    const response = await fetch(apiUrl(`/api/calendar/events?userId=${currentUser.userId}`));
     const data = await response.json();
     
     if (data.events && data.events.length > 0) {
@@ -2419,7 +2432,7 @@ async function tryAutoLogin() {
   
   if (savedToken && savedUserId) {
     try {
-      const response = await fetch('http://localhost:8081/api/auth/me', {
+      const response = await fetch(apiUrl('/api/auth/me'), {
         headers: { 'Authorization': `Bearer ${savedToken}` }
       });
       
@@ -2430,7 +2443,7 @@ async function tryAutoLogin() {
         
         // Socket.IO 재인증
         if (socketIO && socketIO.connected) {
-          socketIO.emit('auth', { token: savedToken, roomId: 'default' });
+          socketIO.emit('auth', { token: savedToken, roomId: currentRoomId() });
         }
         
         // 캘린더 연결 상태 확인
@@ -2478,7 +2491,6 @@ document.getElementById('importState').addEventListener('click', () => {
 });
 document.getElementById('runTests').addEventListener('click', runTests);
 document.getElementById('exportState').addEventListener('click', exportState);
-<script>
 // WebSocket 실시간 로그 스트리밍
 let ws = null;
 let wsReconnectAttempts = 0;
@@ -2531,6 +2543,20 @@ function updateWsStatus(status) {
   }
 }
 
+// 현재 방 ID (URL 파라미터 > 저장값 > 기본값)
+function currentRoomId() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const fromUrl = params.get('room');
+    if (fromUrl) return fromUrl;
+  } catch (_) {}
+  return localStorage.getItem('tev1_roomId') || 'default';
+}
+
+function setCurrentRoomId(roomId) {
+  try { localStorage.setItem('tev1_roomId', roomId); } catch (_) {}
+}
+
 // Socket.IO 실시간 통신 핸들러
 function initSocketIO() {
   if (!socketIO) return;
@@ -2568,17 +2594,27 @@ function initSocketIO() {
 
   // Handle WebRTC offer
   socketIO.on('webrtc-offer', (data) => {
-    handleWebRTCOffer(data.sdp, data.from);
+    handleWebRTCOffer(data.sdp, data.from).catch((e) => console.error('offer handling failed:', e));
   });
 
-  // Handle WebRTC answer
+  // Handle WebRTC answer (data.from 으로 대상 peer 식별)
   socketIO.on('webrtc-answer', (data) => {
-    handleWebRTCAnswer(data.sdp);
+    handleWebRTCAnswer(data.sdp, data.from).catch((e) => console.error('answer handling failed:', e));
   });
 
   // Handle WebRTC ICE candidates
   socketIO.on('webrtc-ice-candidate', (data) => {
-    handleWebRTCIC(data.candidate, data.label, data.network);
+    handleWebRTCIC(data.candidate, data.from).catch((e) => console.error('ice handling failed:', e));
+  });
+
+  // 상대가 방을 나감 -> 연결 정리
+  socketIO.on('user_left', (data) => {
+    closePeerConnection(data.userId);
+  });
+
+  // 서버 종료 통지
+  socketIO.on('server_shutdown', () => {
+    addSystemMessage('서버와의 연결이 종료되었습니다.', 'warn');
   });
 }
 
@@ -2601,70 +2637,157 @@ async function startWebRTC() {
   }
 }
 
-// 로컬 비디오 요소 추가
+// 로컬 비디오 요소 추가 (1개만 유지)
 function addLocalStream(stream) {
-  const video = document.createElement('video');
+  let video = document.getElementById('localVideo');
+  if (!video) {
+    video = document.createElement('video');
+    video.id = 'localVideo';
+    video.className = 'webrtc-video';
+    video.muted = true;
+    video.playsInline = true;
+    document.body.appendChild(video);
+  }
   video.srcObject = stream;
   video.autoplay = true;
-  video.className = 'webrtc-video';
-  document.body.appendChild(video);
+  video.muted = true;
 }
 
-// 원격 스트림 핸들러
+// 원격 스트림 핸들러 (peerId별 1개 요소 유지)
 function onRemoteStream(stream, peerId) {
-  const video = document.createElement('video');
+  let video = document.getElementById('remote_' + peerId);
+  if (!video) {
+    video = document.createElement('video');
+    video.id = 'remote_' + peerId;
+    video.className = 'webrtc-video';
+    video.autoplay = true;
+    video.playsInline = true;
+    document.body.appendChild(video);
+  }
   video.srcObject = stream;
-  video.autoplay = true;
-  video.className = 'webrtc-video';
-  document.body.appendChild(video);
-  console.log(`원격 스트림 수신: ${peerId}`);
 }
 
-// WebRTC 오퍼 처리
-async function handleWebRTCOffer(sdp, from) {
-  const pc = new RTCPeerConnection();
-  peerConnections.set(from, pc);
+// RTCConfiguration (ICE 서버 설정)
+function rtcConfig() {
+  return {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' }
+    ]
+  };
+}
 
-  // Add local stream
+function createPeerConnection(peerId) {
+  const existing = peerConnections.get(peerId);
+  if (existing) return existing;
+
+  const pc = new RTCPeerConnection(rtcConfig());
+  peerConnections.set(peerId, pc);
+  pendingCandidates.set(peerId, []);
+
   if (localStream) {
-    localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
   }
 
-  // Add ICE candidates handler
+  // ontrack가 onaddstream보다 표준이며 스트림을 안정적으로 얻는다
+  pc.ontrack = (event) => {
+    const stream = event.streams && event.streams[0];
+    if (stream) onRemoteStream(stream, peerId);
+  };
+
   pc.onicecandidate = (event) => {
-    if (event.candidate) {
-      socketIO.emit('webrtc-ice-candidate', {
-        candidate: event.candidate,
-        label: event.candidate.sdpMLineIndex,
-        network: event.candidate.component
-      }, from);
+    if (!event.candidate || !socketIO) return;
+    // emit의 두 번째 인자는 콜백이므로 payload 안에 상대 정보를 넣는다
+    socketIO.emit('webrtc-ice-candidate', {
+      candidate: event.candidate.toJSON ? event.candidate.toJSON() : event.candidate,
+      to: peerId
+    });
+  };
+
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      closePeerConnection(peerId);
     }
   };
 
-  // Add remote stream handler
-  pc.onaddstream = (event) => {
-    onRemoteStream(event.stream, from);
-  };
+  return pc;
+}
 
-  // Set remote description
+// 통화 시작: 상대에게 offer 전송
+async function startWebRTCCall(peerId) {
+  if (!socketIO) return;
+  const pc = createPeerConnection(peerId);
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  socketIO.emit('webrtc-offer', { sdp: pc.localDescription, to: peerId });
+}
+
+// WebRTC 오퍼 수신 처리 -> answer 생성
+async function handleWebRTCOffer(sdp, from) {
+  if (!from || !sdp) return;
+  const pc = createPeerConnection(from);
+
   await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+  await flushPendingCandidates(from);
 
-  // Create answer
   const answer = await pc.createAnswer();
   await pc.setLocalDescription(answer);
 
-  // Send answer back
-  socketIO.emit('webrtc-answer', { sdp: pc.localDescription }, from);
+  // 'to'를 payload에 담아 서버가 지정 상대에게 전달할 수 있게 한다
+  socketIO.emit('webrtc-answer', { sdp: pc.localDescription, to: from });
 }
 
-// WebRTC 답변 처리
-async function handleWebRTCAnswer(sdp) {
-  // This is handled on the offer side
+// WebRTC answer 수신 처리
+async function handleWebRTCAnswer(sdp, from) {
+  if (!from) return;
+  const pc = peerConnections.get(from);
+  if (!pc) {
+    console.warn('answer received for unknown peer:', from);
+    return;
+  }
+  await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+  await flushPendingCandidates(from);
+}
+
+// description 설정 전 도착한 ICE 후보는 버퍼에 쌓았다가 나중에 적용한다
+const pendingCandidates = new Map();
+
+async function flushPendingCandidates(peerId) {
+  const queued = pendingCandidates.get(peerId);
+  if (!queued || !queued.length) return;
+  const pc = peerConnections.get(peerId);
+  if (!pc || !pc.remoteDescription) return;
+  for (const cand of queued) {
+    try { await pc.addIceCandidate(new RTCIceCandidate(cand)); } catch (e) { /* 무시 */ }
+  }
+  pendingCandidates.set(peerId, []);
 }
 
 // WebRTC ICE 후보 처리
-function handleWebRTCIC(candidate, label, network) {
-  // Add ICE candidate to appropriate peer connection
+async function handleWebRTCIC(candidate, from) {
+  if (!candidate || !from) return;
+  const pc = peerConnections.get(from);
+  if (!pc || !pc.remoteDescription) {
+    if (!pendingCandidates.has(from)) pendingCandidates.set(from, []);
+    pendingCandidates.get(from).push(candidate);
+    return;
+  }
+  try {
+    await pc.addIceCandidate(new RTCIceCandidate(candidate));
+  } catch (e) {
+    console.warn('ICE candidate 추가 실패:', e.message);
+  }
+}
+
+function closePeerConnection(peerId) {
+  const pc = peerConnections.get(peerId);
+  if (pc) {
+    try { pc.close(); } catch (_) {}
+    peerConnections.delete(peerId);
+  }
+  pendingCandidates.delete(peerId);
+  const el = document.getElementById('remote_' + peerId);
+  if (el) el.remove();
 }
 
 // 메시지 추가 UI
@@ -2707,11 +2830,8 @@ function updateCursorPosition(userId, x, y, name, color) {
   cursorEl.style.top = `${y}px`;
 }
 
-// 페이지 로드 시 초기화
-document.addEventListener('DOMContentLoaded', () => {
-  initWebSocket();
-  initSocketIO();
-});
+// 결정 로그에一行 추가
+function appendDecisionLog(message, level = 'info') {
   const panel = document.getElementById('decisionLogPanel');
   if (!panel) return;
   const time = new Date().toLocaleTimeString('ko-KR');
@@ -2719,6 +2839,12 @@ document.addEventListener('DOMContentLoaded', () => {
   panel.innerHTML += `<div ${levelClass}>[${time}] ${message}</div>`;
   panel.scrollTop = panel.scrollHeight;
 }
+
+// 페이지 로드 시 초기화
+document.addEventListener('DOMContentLoaded', () => {
+  initWebSocket();
+  initSocketIO();
+});
 
 // i18n 번역 시스템
 const i18n = {
@@ -2950,471 +3076,191 @@ function setWsUrl(url) {
     localStorage.setItem('theme', next);
     themeToggle.textContent = next === 'dark' ? '☀️' : '🌙';
   });
-});
 
 // Socket.IO 초기화 (실시간 통신 및 WebRTC 시그널링)
-const socketIO = io(`${window.location.origin}`, {
-  transports: ['websocket'],
-  upgrade: false
-});
+// 서버는 별도 포트(기본 8081)에서 동작하므로 백엔드 주소를 명시해야 한다.
+// 리버스 프록시로 동일 origin이면 TEV1_SERVER_URL을 비워도 된다.
+const TEV1_SERVER_URL = window.TEV1_SERVER_URL || 'http://localhost:8081';
+const socketIO = (typeof io === 'function')
+  ? io(TEV1_SERVER_URL, { transports: ['websocket', 'polling'], upgrade: true })
+  : null;
 
-// WebSocket 실시간 로그 스트리밍 (기존 기능 유지)
-let ws = null;
-let wsReconnectAttempts = 0;
-const wsUrl = state.settings.wsUrl || 'wss://echo.websocket.org'; // 기본 에코 서버
-
-function initWebSocket() {
-  if (ws && ws.readyState === WebSocket.OPEN) return;
-  
-  try {
-    ws = new WebSocket(wsUrl);
-    ws.onopen = () => {
-      console.log('WebSocket 연결됨');
-      wsReconnectAttempts = 0;
-      updateWsStatus('connected');
-    };
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'log') {
-          appendDecisionLog(data.message, data.level);
-        }
-      } catch (e) {
-        console.warn('WebSocket 메시지 파싱 오류:', e);
-      }
-    };
-    ws.onclose = () => {
-      console.log('WebSocket 연결 종료');
-      updateWsStatus('disconnected');
-      if (wsReconnectAttempts < maxReconnectAttempts) {
-        wsReconnectAttempts++;
-        setTimeout(initWebSocket, 2000 * wsReconnectAttempts);
-      }
-    };
-    ws.onerror = (error) => {
-      console.error('WebSocket 오류:', error);
-      updateWsStatus('error');
-    };
-  } catch (e) {
-    console.error('WebSocket 초기화 실패:', e);
-    updateWsStatus('error');
-  }
+if (!socketIO) {
+  console.error('Socket.IO 클라이언트를 불러오지 못했습니다. /socket.io/socket.io.js 경로를 확인하세요.');
 }
 </script>
 
 <script>
-// Service Worker 등록 (PWA 지원) - Blob URL 사용
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    const swCode = `
-      const CACHE_NAME = 'tev1-v3';
-      const STATIC_CACHE = 'tev1-static-v3';
-      const DYNAMIC_CACHE = 'tev1-dynamic-v3';
-      const OFFLINE_URL = '/offline.html';
-
-      const urlsToCache = [
-        '/',
-        '/index.html',
-        '/manifest.json',
-        '/icon-192.png',
-        '/icon-512.png'
-      ];
-
-      // Install: 정적 리소스 캐싱
-      self.addEventListener('install', (event) => {
-        event.waitUntil(
-          caches.open(STATIC_CACHE)
-            .then((cache) => cache.addAll(urlsToCache))
-            .then(() => self.skipWaiting())
-        );
-      });
-
-      // Activate: 오래된 캐시 정리
-      self.addEventListener('activate', (event) => {
-        event.waitUntil(
-          caches.keys().then((cacheNames) => {
-            return Promise.all(
-              cacheNames.map((cacheName) => {
-                if (!cacheName.startsWith('tev1-')) {
-                  return caches.delete(cacheName);
-                }
-              })
-            );
-          }).then(() => self.clients.claim())
-        );
-      });
-
-      // Fetch: 전략적 캐싱 (Stale-While-Revalidate)
-      self.addEventListener('fetch', (event) => {
-        const { request } = event;
-        const url = new URL(request.url);
-
-        // API 요청은 네트워크 우선 (캐시 폴백)
-        if (url.pathname.startsWith('/api/')) {
-          event.respondWith(networkFirstThenCache(request));
-          return;
-        }
-
-        // 정적 리소스는 캐시 우선
-        if (request.method === 'GET' && (url.pathname.endsWith('.js') || url.pathname.endsWith('.css') || url.pathname.endsWith('.png') || url.pathname.endsWith('.ico'))) {
-          event.respondWith(cacheFirstThenNetwork(request));
-          return;
-        }
-
-        // HTML은 네트워크 우선 (오프라인 폴백)
-        if (request.mode === 'navigate' || request.headers.get('accept')?.includes('text/html')) {
-          event.respondWith(networkFirstWithOfflineFallback(request));
-          return;
-        }
-
-        // 기본: 캐시 폴백 네트워크
-        event.respondWith(caches.match(request).then(response => response || fetch(request)));
-      });
-
-      // 전략: 네트워크 우선 -> 캐시
-      async function networkFirstThenCache(request) {
-        try {
-          const response = await fetch(request);
-          if (response.ok) {
-            const cache = await caches.open(DYNAMIC_CACHE);
-            cache.put(request, response.clone());
-          }
-          return response;
-        } catch (error) {
-          const cached = await caches.match(request);
-          return cached || new Response(JSON.stringify({ error: 'Offline', offline: true }), { 
-            headers: { 'Content-Type': 'application/json' } 
-          });
-        }
-      }
-
-      // 전략: 캐시 우선 -> 네트워크
-      async function cacheFirstThenNetwork(request) {
-        const cached = await caches.match(request);
-        if (cached) return cached;
-        try {
-          const response = await fetch(request);
-          if (response.ok) {
-            const cache = await caches.open(STATIC_CACHE);
-            cache.put(request, response.clone());
-          }
-          return response;
-        } catch (error) {
-          return cached || new Response('Offline', { status: 503 });
-        }
-      }
-
-      // 전략: 네트워크 우선 + 오프라인 폴백
-      async function networkFirstWithOfflineFallback(request) {
-        try {
-          const response = await fetch(request);
-          if (response.ok) {
-            const cache = await caches.open(STATIC_CACHE);
-            cache.put(request, response.clone());
-          }
-          return response;
-        } catch (error) {
-          const cached = await caches.match(request);
-          if (cached) return cached;
-          // 오프라인 페이지 반환
-          const offlineResponse = await caches.match(OFFLINE_URL);
-          return offlineResponse || new Response('Offline', { status: 503 });
-        }
-      }
-
-      // Background Sync: 오프라인 상태에서 대기 중인 작업 동기화
-      self.addEventListener('sync', (event) => {
-        if (event.tag === 'sync-messages') {
-          event.waitUntil(syncMessages());
-        } else if (event.tag === 'sync-decisions') {
-          event.waitUntil(syncDecisions());
-        } else if (event.tag === 'sync-cursors') {
-          event.waitUntil(syncCursors());
-        }
-      });
-
-      async function syncMessages() {
-        const cache = await caches.open('tev1-pending');
-        const requests = await cache.keys();
-        for (const req of requests) {
-          try {
-            await fetch(req);
-            await cache.delete(req);
-          } catch (e) {
-            console.log('Sync failed for', req.url);
-          }
-        }
-      }
-
-      async function syncDecisions() { /* 로직 구현 */ }
-      async function syncCursors() { /* 로직 구현 */ }
-
-      // Push 알림 처리
-      self.addEventListener('push', (event) => {
-        if (!event.data) return;
-        const data = event.data.json();
-        const options = {
-          body: data.body || '새 알림이 있습니다.',
-          icon: '/icon-192.png',
-          badge: '/badge-72.png',
-          vibrate: [200, 100, 200],
-          data: data.data || {},
-          actions: [
-            { action: 'open', title: '열기' },
-            { action: 'dismiss', title: '닫기' }
-          ],
-          requireInteraction: true
-        };
-        event.waitUntil(self.registration.showNotification(data.title || 'TEV1', options));
-      });
-
-      // 알림 클릭 처리
-      self.addEventListener('notificationclick', (event) => {
-        event.notification.close();
-        if (event.action === 'open' || !event.action) {
-          event.waitUntil(
-            clients.matchAll({ type: 'window' }).then(clientList => {
-              for (const client of clientList) {
-                if (client.url === '/' && 'focus' in client) return client.focus();
-              }
-              return clients.openWindow('/');
-            })
-          );
-        }
-      });
-
-      // 주기적 동기화 (Periodic Background Sync)
-      self.addEventListener('periodicsync', (event) => {
-        if (event.tag === 'periodic-data-sync') {
-          event.waitUntil(periodicSync());
-        }
-      });
-
-      async function periodicSync() {
-        // 정기적으로 서버 상태 확인 및 데이터 동기화
-        try {
-          await fetch('/health');
-        } catch (e) {
-          console.log('Periodic sync failed');
-        }
-      }
-    `;
-    
-    const blob = new Blob([swCode], { type: 'application/javascript' });
-    const swUrl = URL.createObjectURL(blob);
-    
-    navigator.serviceWorker.register(swUrl)
-      .then(registration => {
-        console.log('Service Worker 등록 성공:', registration.scope);
-        
-        // 주기적 동기화 등록 (지원 시)
-        if ('periodicSync' in registration) {
-          registration.periodicSync.register('periodic-data-sync', { minInterval: 24 * 60 * 60 * 1000 })
-            .catch(e => console.log('Periodic sync not supported:', e));
-        }
-      })
-      .catch(error => {
-        console.log('Service Worker 등록 실패:', error);
-      });
-  });
-}
-
-// ============================================
-// PWA 고급 기능: 설치 프롬프트 + 푸시 알림
-// ============================================
-let deferredPrompt;
-let isPushSupported = 'PushManager' in window;
-let pushSubscription = null;
-
-// 설치 프롬프트 처리
-window.addEventListener('beforeinstallprompt', (e) => {
-  e.preventDefault();
-  deferredPrompt = e;
-  showInstallButton(true);
-});
-
-window.addEventListener('appinstalled', () => {
-  console.log('PWA 설치됨');
-  showInstallButton(false);
-  deferredPrompt = null;
-});
-
-// 설치 버튼 표시/숨김
-function showInstallButton(show) {
+// PWA 설치 프롬프트 + Web Push 알림
+// (설치/알림 버튼이 실제로 동작하도록 핸들러를 등록한다)
+(function setupPwa() {
   const installBtn = document.getElementById('installBtn');
-  if (installBtn) {
-    installBtn.style.display = show ? 'inline-flex' : 'none';
-  }
-}
+  const pushBtn = document.getElementById('pushBtn');
+  let deferredPrompt = null;
 
-// 설치 버튼 클릭 핸들러
-document.getElementById('installBtn')?.addEventListener('click', async () => {
-  if (!deferredPrompt) return;
-  deferredPrompt.prompt();
-  const { outcome } = await deferredPrompt.userChoice;
-  if (outcome === 'accepted') {
-    msg('ok', '앱이 설치되었습니다!');
-  }
-  deferredPrompt = null;
-  showInstallButton(false);
-});
-
-// 푸시 알림 구독 요청
-async function requestPushPermission() {
-  if (!isPushSupported) {
-    msg('bad', '이 브라우저는 푸시 알림을 지원하지 않습니다');
-    return;
+  function showInstallBtn(show) {
+    if (installBtn) installBtn.style.display = show ? 'inline-flex' : 'none';
   }
 
-  try {
-    const registration = await navigator.serviceWorker.ready;
-    
-    // 기존 구독 확인
-    pushSubscription = await registration.pushManager.getSubscription();
-    if (pushSubscription) {
-      msg('ok', '이미 푸시 알림이 활성화되어 있습니다');
-      updatePushUI(true);
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    showInstallBtn(true);
+  });
+
+  window.addEventListener('appinstalled', () => {
+    deferredPrompt = null;
+    showInstallBtn(false);
+    if (window.msg) window.msg('ok', 'TEV1이 설치되었습니다.');
+  });
+
+  installBtn && installBtn.addEventListener('click', async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const choice = await deferredPrompt.userChoice;
+    if (choice.outcome === 'accepted') showInstallBtn(false);
+    deferredPrompt = null;
+  });
+
+  function base64ToUint8Array(base64) {
+    const padding = '='.repeat((4 - (base64.length % 4)) % 4);
+    const normalized = (base64 + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = window.atob(normalized);
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i += 1) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+
+  async function getVapidPublicKey() {
+    // 서버에 설정된 공개키를 사용한다 (하드코딩 금지)
+    try {
+      const res = await fetch(apiUrl('/api/push/vapid-public-key'));
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data && data.publicKey ? data.publicKey : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function setPushUi(state) {
+    if (!pushBtn) return;
+    if (state === 'on') {
+      pushBtn.textContent = '🔔 알림 끔';
+      pushBtn.className = 'btn tiny';
+    } else if (state === 'off') {
+      pushBtn.textContent = '🔔 알림 켬';
+      pushBtn.className = 'btn ghost tiny';
+    } else {
+      pushBtn.textContent = '🔔 알림 불가';
+      pushBtn.className = 'btn ghost tiny';
+      pushBtn.disabled = true;
+      pushBtn.title = '이 브라우저는 Push를 지원하지 않습니다';
+    }
+  }
+
+  async function enablePush() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      setPushUi('unsupported');
       return;
     }
-
-    // VAPID 공개 키 (실제 환경에서는 서버에서 생성)
-    const vapidPublicKey = 'BEl62iUYgUivxIkv69yViEuiBIa40HI80NM9fY7s5eDg8qVhKsLGhQ9k5z';
-    
-    pushSubscription = await registration.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(vapidPublicKey)
-    });
-
-    // 구독 정보를 서버에 전송
-    await sendSubscriptionToServer(pushSubscription);
-    
-    updatePushUI(true);
-    msg('ok', '푸시 알림이 활성화되었습니다!');
-  } catch (err) {
-    console.error('Push subscription error:', err);
-    if (err.name === 'NotAllowedError') {
-      msg('bad', '알림 권한이 거부되었습니다. 브라우저 설정에서 허용해주세요.');
-    } else {
-      msg('bad', '푸시 알림 설정 실패: ' + err.message);
+    const publicKey = await getVapidPublicKey();
+    if (!publicKey) {
+      if (window.msg) window.msg('bad', '서버에 VAPID 키가 설정되지 않았습니다.');
+      return;
     }
-  }
-}
-
-// 푸시 구독 해제
-async function unsubscribePush() {
-  if (!pushSubscription) return;
-  try {
-    await pushSubscription.unsubscribe();
-    await sendUnsubscriptionToServer(pushSubscription);
-    pushSubscription = null;
-    updatePushUI(false);
-    msg('ok', '푸시 알림이 비활성화되었습니다');
-  } catch (err) {
-    console.error('Unsubscribe error:', err);
-    msg('bad', '푸시 알림 비활성화 실패');
-  }
-}
-
-// VAPID 키 변환 유틸리티
-function urlBase64ToUint8Array(base64String) {
-  const padding = '='.repeat((4 - base64String.length % 4) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-  const rawData = window.atob(base64);
-  return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
-}
-
-// 서버에 구독 정보 전송
-async function sendSubscriptionToServer(subscription) {
-  if (!currentUser) return;
-  try {
-    await fetch('http://localhost:8081/api/push/subscribe', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: currentUser.userId, subscription })
-    });
-  } catch (e) { console.log('Push subscribe server sync failed:', e); }
-}
-
-async function sendUnsubscriptionToServer(subscription) {
-  if (!currentUser) return;
-  try {
-    await fetch('http://localhost:8081/api/push/unsubscribe', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: currentUser.userId, endpoint: subscription.endpoint })
-    });
-  } catch (e) { console.log('Push unsubscribe server sync failed:', e); }
-}
-
-// 푸시 UI 업데이트
-function updatePushUI(subscribed) {
-  const pushBtn = document.getElementById('pushBtn');
-  if (pushBtn) {
-    pushBtn.textContent = subscribed ? '🔔 알림 끔' : '🔔 알림 켬';
-    pushBtn.className = subscribed ? 'btn' : 'btn ghost';
-    pushBtn.onclick = subscribed ? unsubscribePush : requestPushPermission;
-  }
-}
-
-// 오프라인 감지 및 동기화
-function setupOfflineSync() {
-  window.addEventListener('online', () => {
-    msg('ok', '온라인 상태 복구 - 데이터 동기화 중...');
-    syncPendingData();
-  });
-
-  window.addEventListener('offline', () => {
-    msg('warn', '오프라인 모드 - 변경사항은 로컬에 저장됩니다');
-  });
-}
-
-// 대기 중인 데이터 동기화 (Background Sync API 사용)
-async function syncPendingData() {
-  if ('serviceWorker' in navigator && 'SyncManager' in window) {
     try {
       const registration = await navigator.serviceWorker.ready;
-      await registration.sync.register('sync-messages');
-      await registration.sync.register('sync-decisions');
-      await registration.sync.register('sync-cursors');
-      console.log('Background sync registered');
-    } catch (e) {
-      console.log('Background sync not available:', e);
+      let sub = await registration.pushManager.getSubscription();
+      if (!sub) {
+        sub = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: base64ToUint8Array(publicKey),
+        });
+      }
+      await fetch(apiUrl('/api/push/subscribe'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer ' + localStorage.getItem('tev1_token'),
+        },
+        body: JSON.stringify({ subscription: sub.toJSON() }),
+      });
+      setPushUi('on');
+      if (window.msg) window.msg('ok', '푸시 알림이 켜졌습니다.');
+    } catch (err) {
+      if (window.msg) window.msg('bad', '알림 권한이 거부되었습니다: ' + err.message);
     }
   }
-}
 
-// 로컬 데이터 저장 (오프라인 지원)
-function saveOfflineData(key, data) {
-  try {
-    const pending = JSON.parse(localStorage.getItem('tev1_pending') || '[]');
-    pending.push({ key, data, timestamp: Date.now() });
-    localStorage.setItem('tev1_pending', JSON.stringify(pending));
-  } catch (e) { console.error('Save offline failed:', e); }
-}
-
-// 페이지 로드 시 초기화
-document.addEventListener('DOMContentLoaded', () => {
-  setupOfflineSync();
-  
-  // 설치 버튼 초기 상태
-  if (window.matchMedia('(display-mode: standalone)').matches) {
-    showInstallButton(false);
+  async function disablePush() {
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      const sub = await registration.pushManager.getSubscription();
+      if (sub) {
+        await fetch(apiUrl('/api/push/unsubscribe'), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer ' + localStorage.getItem('tev1_token'),
+          },
+          body: JSON.stringify({ endpoint: sub.endpoint }),
+        });
+        await sub.unsubscribe();
+      }
+      setPushUi('off');
+      if (window.msg) window.msg('ok', '푸시 알림이 꺼졌습니다.');
+    } catch (err) {
+      if (window.msg) window.msg('bad', '알림 해제 실패: ' + err.message);
+    }
   }
-});
 
-// 알림 권한 상태 확인
-async function checkNotificationPermission() {
-  if (!isPushSupported) return;
-  const permission = Notification.permission;
-  if (permission === 'granted') {
-    const registration = await navigator.serviceWorker.ready;
-    pushSubscription = await registration.pushManager.getSubscription();
-    updatePushUI(!!pushSubscription);
-  }
+  pushBtn && pushBtn.addEventListener('click', () => {
+    if (pushBtn.disabled) return;
+    const isOn = pushBtn.textContent.includes('끄');
+    isOn ? disablePush() : enablePush();
+  });
+
+  window.addEventListener('DOMContentLoaded', async () => {
+    setPushUi('off');
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      setPushUi('unsupported');
+      return;
+    }
+    if (Notification.permission === 'granted') {
+      try {
+        const registration = await navigator.serviceWorker.ready;
+        const sub = await registration.pushManager.getSubscription();
+        if (sub) setPushUi('on');
+      } catch (_) { /* 무시 */ }
+    }
+  });
+})();
+</script>
+
+<script>
+// Service Worker 등록 (PWA 지원)
+// 주의: blob URL은 Service Worker로 등록할 수 없다(브라우저가 거부).
+// 실제 파일(sw.js)로 서빙해야 한다.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    const swUrl = new URL('sw.js', document.baseURI).href;
+
+    navigator.serviceWorker.register(swUrl)
+      .then((registration) => {
+        console.log('Service Worker 등록 성공:', registration.scope);
+        // 지원 브라우저에서만 주기적 동기화 등록
+        if ('periodicSync' in registration) {
+          registration.periodicSync
+            .register('tev1-sync-pending', { minInterval: 24 * 60 * 60 * 1000 })
+            .catch((e) => console.log('Periodic sync 미지원:', e.message));
+        }
+      })
+      .catch((error) => {
+        console.warn('Service Worker 등록 실패:', error.message);
+      });
+  });
 }
-
-checkNotificationPermission();
-document.getElementById('exportState').addEventListener('click', exportState);
 </script>
 
 <!-- 19. 접근성 개선 스크립트 -->
