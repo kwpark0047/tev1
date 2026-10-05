@@ -144,6 +144,7 @@ curl https://tev1.example.com/health/detailed
 | SMTP_PASS | X | SMTP 비밀번호 | - |
 | MAIL_FROM | X | 발신자 표시 주소 | `tev1@example.com` |
 | MAIL_OUTBOX_FILE | - | dev-outbox 저장 경로(개발 전용) | `/tmp/tev1-outbox.jsonl` |
+| REQUIRE_EMAIL_VERIFICATION | - | 이메일 인증 강제 (production이면 기본 true) | `true` |
 | METRICS_TOKEN | - | `/metrics` 접근 시 요구할 베어러 토큰 | `random-token` |
 | FRONTEND_URL | O | 프론트엔드 URL (메일 링크 생성에 사용) | `https://tev1.example.com` |
 | CORS_ORIGIN | O | CORS 허용 오리진 | `https://tev1.example.com` |
@@ -324,6 +325,35 @@ make -j4 MALLOC=libc redis-server redis-cli
 cd server
 npm test                        # 프론트 9항목 + 서버 33항목
 TEV1_SKIP_DB=1 npm run test:smoke   # DB 없이 degradation 경로 17항목
+```
+
+## 프론트엔드 서버 주소 설정
+
+프론트엔드는 서버 주소가 하드코딩되어 있지 않다. 다음 우선순위로 해석한다.
+
+1. `window.__TEV1__ = { serverUrl: 'https://api.tev1.example.com' }` (배포 인젝션 권장)
+2. `window.TEV1_SERVER_URL` (인라인 스크립트 선언)
+3. `<meta name="tev1-server-url" content="https://...">`
+4. 위가 모두 없으면 **현재 origin과 동일**하게 연결 (리버스 프록시 권장)
+
+빈 값이면 상대경로로 동작하므로, API와 Socket.IO가 같은 도메인에 있으면 별도 설정이 없다.
+
+개발 시 인라인 선언 예시:
+
+```html
+<script>window.TEV1_SERVER_URL = 'http://localhost:8081';</script>
+```
+
+Nginx 리버스 프록시 예시(`/socket.io/` Upgrade 헤더를 반드시 전달):
+
+```nginx
+location /socket.io/ {
+    proxy_pass http://127.0.0.1:8081;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
 ```
 
 ## 메일 발송 (SMTP) 설정

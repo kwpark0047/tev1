@@ -10,8 +10,14 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="tev1">
 <link rel="apple-touch-icon" href="icon-192.png">
-<!-- Socket.IO 클라이언트: 서버(기본 8081)와 실시간 통신에 필수 -->
-<script src="http://localhost:8081/socket.io/socket.io.js"></script>
+<!-- Socket.IO 클라이언트는 런타임에 서버 주소로 동적 로드한다 (하드코딩 금지).
+     서버 주소 결정 순서:
+       1) window.TEV1_SERVER_URL (window.__TEV1__ 로 주입 가능)
+       2) <meta name="tev1-server-url" content="...">
+       3) <script>window.TEV1_SERVER_URL='...'</script> 인라인 선언
+       4) 리버스 프록시 동일 origin이면 상대경로(빈 문자열)
+     개발 시: 인라인 스크립트로 window.TEV1_SERVER_URL을 'http://localhost:8081'로 선언
+     배포 시: window.__TEV1__ = { serverUrl: 'https://api.tev1.example.com' } 인젝션 권장 -->
 <style>
 :root{
   --ink:#191b2e;
@@ -2087,6 +2093,7 @@ updateOllamaStatus(true);
         <button type="submit" id="authSubmit" class="btn" style="width:100%;">로그인</button>
         <div style="text-align:center;margin-top:10px;font-size:12px;">
           <button class="btn ghost tiny" id="forgotPwBtn" onclick="openForgotPassword()">비밀번호를 잊으셨나요?</button>
+          <button class="btn ghost tiny" onclick="showPasswordSetupPrompt(document.getElementById('authUserId').value.trim())" title="비밀번호가 설정된 적 없는 계정">비밀번호 설정</button>
         </div>
       </form>
 
@@ -2101,6 +2108,7 @@ updateOllamaStatus(true);
         <input id="authNewPw" type="password" placeholder="새 비밀번호 (10자 이상)" autocomplete="new-password"
                style="width:100%;margin-bottom:6px;padding:7px;background:var(--ink);color:inherit;border:1px solid var(--line);border-radius:3px;">
         <button class="btn ghost tiny" onclick="doChangePassword()">비밀번호 변경</button>
+        <button class="btn ghost tiny" onclick="showSessions()">로그인 기기</button>
 
         <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line);">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
@@ -2148,11 +2156,28 @@ updateOllamaStatus(true);
 
       <!-- 비밀번호 찾기 -->
       <div id="forgotBox" style="display:none;margin-top:16px;padding-top:12px;border-top:1px solid var(--line);">
-        <div style="font-size:12px;margin-bottom:8px;">비밀번호 찾기</div>
+        <div id="forgotTitle" style="font-size:12px;margin-bottom:8px;">비밀번호 찾기</div>
         <input id="forgotEmail" type="email" placeholder="가입할 때 사용한 이메일"
                style="width:100%;margin-bottom:6px;padding:7px;background:var(--ink);color:inherit;border:1px solid var(--line);border-radius:3px;">
-        <button class="btn ghost tiny" onclick="doForgotPassword()">재설정 링크 받기</button>
-        <button class="btn ghost tiny" onclick="toggleForgotBox()">닫기</button>
+        <button class="btn ghost tiny" onclick="pendingSetupUserId ? doRequestPasswordSetup() : doForgotPassword()">링크 받기</button>
+        <button class="btn ghost tiny" onclick="toggleForgotBox(false); pendingSetupUserId = null;">닫기</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 로그인 기기(세션) 모달 -->
+<div id="sessionsModal" style="position:fixed;inset:0;background:rgba(10,11,20,.72);display:none;align-items:center;justify-content:center;z-index:10001;padding:20px;">
+  <div class="panel" style="width:min(480px,100%);max-height:90vh;overflow:auto;">
+    <div class="hd" style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin:-12px -12px 12px;padding:12px;background:var(--ink);color:#fff;border-radius:4px 4px 0 0;">
+      <strong>로그인 기기</strong>
+      <button class="btn ghost tiny" onclick="closeSessionsModal()" aria-label="닫기">✕</button>
+    </div>
+    <div class="bd" style="padding:12px;">
+      <div id="sessionsList"></div>
+      <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+        <button class="btn ghost tiny" onclick="revokeOtherSessions()">다른 기기 모두 종료</button>
+        <button class="btn tiny" onclick="closeSessionsModal()">닫기</button>
       </div>
     </div>
   </div>
@@ -2162,6 +2187,7 @@ updateOllamaStatus(true);
 // 인증 모달 (로그인 / 회원가입 / 비밀번호 변경 / 2FA / 비밀번호 찾기)
 let authMode = 'login';
 let authTotpRequired = false;
+let pendingSetupUserId = null;
 
 function toggleForgotBox(show) {
   const box = document.getElementById('forgotBox');
@@ -2172,6 +2198,9 @@ function toggleForgotBox(show) {
 }
 
 function openForgotPassword() {
+  pendingSetupUserId = null;
+  const title = document.getElementById('forgotTitle');
+  if (title) title.textContent = '비밀번호 찾기';
   toggleForgotBox(true);
   showAuthError('');
 }
@@ -2271,7 +2300,8 @@ document.getElementById('authForm')?.addEventListener('submit', async (e) => {
         showAuthError('비밀번호가 일치하지 않습니다.');
         return;
       }
-      result = await register(userId, name, password);
+      const email = (document.getElementById('authEmail').value || '').trim();
+      result = await register(userId, name, password, email);
     } else {
       const totpCode = document.getElementById('authTotp').value.trim();
       result = await login(userId, password, totpCode);
@@ -2280,8 +2310,20 @@ document.getElementById('authForm')?.addEventListener('submit', async (e) => {
     if (result.ok) {
       closeAuthModal();
       document.getElementById('authForm').reset();
+      // 가입 직후 인증 메일이 갔다면 안내한다
+      if (result.emailVerificationRequired) {
+        msg('ok', '가입이 완료되었습니다. 이메일로 보낸 인증 링크를 확인해 주세요.');
+        showVerifyEmailPrompt(result.email);
+      }
     } else if (result.error) {
       showAuthError(result.error);
+      if (result.code === 'EMAIL_NOT_VERIFIED') {
+        showVerifyEmailPrompt(result.email);
+      }
+      if (result.code === 'PASSWORD_SETUP_REQUIRED') {
+        if (result.email) showPasswordSetupPrompt(userId);
+        else showAuthError('비밀번호가 설정되지 않은 계정입니다. 관리자에게 문의하세요.');
+      }
     }
   } finally {
     btn.disabled = false;
@@ -2487,7 +2529,73 @@ async function handleUrlTokens() {
   if (resetToken) {
     openResetPasswordForm(resetToken);
     clearUrlParams(['reset']);
+    return;
   }
+
+  // 레거시 계정 비밀번호 초기화(?setup=)
+  const setupToken = params.get('setup');
+  if (setupToken) {
+    openPasswordSetupForm(setupToken);
+    clearUrlParams(['setup']);
+  }
+}
+
+/**
+ * 레거시 계정 비밀번호 설정 폼.
+ * 재설정 폼과 같은 구조를 쓰되 엔드포인트와 문구를 구분한다.
+ */
+function openPasswordSetupForm(token) {
+  openAuthModal('register');
+  authMode = 'login';
+  const form = document.getElementById('authForm');
+  if (!form) return;
+
+  form.innerHTML =
+    '<div style="font-size:12px;margin-bottom:10px;">계정을 활성화하기 위해 새 비밀번호를 설정하세요.</div>' +
+    '<label style="display:block;margin-bottom:10px;font-size:12px;">새 비밀번호' +
+    '<input id="setupNewPw" type="password" autocomplete="new-password" ' +
+    'style="width:100%;margin-top:4px;padding:8px;background:var(--ink);color:inherit;border:1px solid var(--line);border-radius:3px;">' +
+    '<span style="display:block;color:#8b90b8;font-size:11px;margin-top:4px;">10자 이상, 영문 대소문자·숫자 중 2종 이상</span>' +
+    '</label>' +
+    '<label style="display:block;margin-bottom:10px;font-size:12px;">새 비밀번호 확인' +
+    '<input id="setupConfirmPw" type="password" autocomplete="new-password" ' +
+    'style="width:100%;margin-top:4px;padding:8px;background:var(--ink);color:inherit;border:1px solid var(--line);border-radius:3px;">' +
+    '</label>' +
+    '<div id="authError" style="display:none;color:#d9524a;font-size:12px;margin-bottom:10px;" role="alert"></div>' +
+    '<button type="submit" class="btn" style="width:100%;">비밀번호 설정하고 로그인</button>';
+
+  const handler = async (e) => {
+    e.preventDefault();
+    const pw = document.getElementById('setupNewPw').value;
+    const confirmPw = document.getElementById('setupConfirmPw').value;
+    if (pw !== confirmPw) {
+      showAuthError('비밀번호가 일치하지 않습니다.');
+      return;
+    }
+    try {
+      const res = await fetch(apiUrl('/api/auth/complete-setup'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, newPassword: pw }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showAuthError(data.error || '비밀번호 설정에 실패했습니다.');
+        return;
+      }
+      form.removeEventListener('submit', handler);
+      closeAuthModal();
+      msg('ok', data.message || '비밀번호가 설정되었습니다. 로그인해 주세요.');
+      openAuthModal('login');
+      setTimeout(() => restoreAuthForm(), 100);
+    } catch (err) {
+      showAuthError('서버에 연결할 수 없습니다.');
+    }
+  };
+
+  form.addEventListener('submit', handler);
+  form.dataset.resetHandler = '1';
+  setTimeout(() => document.getElementById('setupNewPw')?.focus(), 40);
 }
 
 function clearUrlParams(keys) {
@@ -2562,6 +2670,99 @@ function restoreAuthForm() {
   location.reload();
 }
 
+// ===================== 세션(로그인 기기) 관리 =====================
+async function showSessions() {
+  if (!currentToken) {
+    openAuthModal('login');
+    return;
+  }
+  const modal = document.getElementById('sessionsModal');
+  const list = document.getElementById('sessionsList');
+  if (!modal || !list) return;
+
+  modal.style.display = 'flex';
+  list.innerHTML = '<div style="font-size:12px;color:#8b90b8;">불러오는 중...</div>';
+
+  try {
+    const res = await fetch(apiUrl('/api/auth/sessions'), {
+      headers: { Authorization: 'Bearer ' + currentToken },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      list.innerHTML = '<div style="font-size:12px;color:#d9524a;">세션 목록을 불러오지 못했습니다.</div>';
+      return;
+    }
+
+    const active = (data.sessions || []).filter((s) => s.active);
+    if (active.length === 0) {
+      list.innerHTML = '<div style="font-size:12px;color:#8b90b8;">활성 세션이 없습니다.</div>';
+      return;
+    }
+
+    list.innerHTML = active
+      .map((s) => {
+        const ua = (s.userAgent || '알 수 없음').slice(0, 90);
+        const when = s.createdAt ? new Date(s.createdAt).toLocaleString('ko-KR') : '-';
+        return (
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;' +
+          'padding:10px 0;border-bottom:1px solid var(--line);">' +
+          '<div style="flex:1;min-width:0;">' +
+          '<div style="font-size:12px;">' + escapeHtml(ua) +
+          (s.current ? ' <span class="badge ai" style="font-size:10px;">현재 기기</span>' : '') + '</div>' +
+          '<div style="font-size:10px;color:#8b90b8;margin-top:3px;">접속 ' + when +
+          (s.ip ? ' · IP ' + escapeHtml(String(s.ip)) : '') + '</div>' +
+          '</div>' +
+          (s.current ? '' :
+            '<button class="btn ghost tiny" onclick="revokeSession(\'' + s.jti + '\')">종료</button>') +
+          '</div>'
+        );
+      })
+      .join('');
+  } catch (e) {
+    list.innerHTML = '<div style="font-size:12px;color:#d9524a;">서버에 연결할 수 없습니다.</div>';
+  }
+}
+
+async function revokeSession(jti) {
+  try {
+    const res = await fetch(apiUrl('/api/auth/sessions/revoke'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + currentToken,
+      },
+      body: JSON.stringify({ jti }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      msg('ok', data.message || '세션을 종료했습니다.');
+      showSessions();
+    } else {
+      msg('bad', data.error || '세션 종료에 실패했습니다.');
+    }
+  } catch (e) {
+    msg('bad', '서버에 연결할 수 없습니다.');
+  }
+}
+
+async function revokeOtherSessions() {
+  try {
+    const res = await fetch(apiUrl('/api/auth/sessions/revoke-others'), {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + currentToken },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      msg('ok', data.message || '다른 세션을 종료했습니다.');
+      showSessions();
+    } else {
+      msg('bad', data.error || '세션 종료에 실패했습니다.');
+    }
+  } catch (e) {
+    msg('bad', '서버에 연결할 수 없습니다.');
+  }
+}
+
 // ESC 로 모달 닫기
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
@@ -2571,6 +2772,15 @@ document.addEventListener('keydown', (e) => {
 });
 
 // 모달 바깥 클릭으로 닫기
+function closeSessionsModal() {
+  const m = document.getElementById('sessionsModal');
+  if (m) m.style.display = 'none';
+}
+
+document.getElementById('sessionsModal')?.addEventListener('click', (e) => {
+  if (e.target.id === 'sessionsModal') closeSessionsModal();
+});
+
 document.getElementById('authModal')?.addEventListener('click', (e) => {
   if (e.target.id === 'authModal') closeAuthModal();
 });
@@ -3282,9 +3492,8 @@ let currentToken = null;
 
 // 백엔드 API 베이스 URL (하드코딩 제거)
 function apiBase() {
-  return (typeof TEV1_SERVER_URL !== 'undefined' && TEV1_SERVER_URL)
-    ? TEV1_SERVER_URL
-    : 'http://localhost:8081';
+  // resolveServerUrl()과 동일한 규칙. 빈 값이면 동일 origin 상대경로로 동작한다.
+  return resolveServerUrl();
 }
 
 function apiUrl(pathname) {
@@ -3374,23 +3583,29 @@ async function login(userId, password, totpCode) {
 }
 
 // 회원가입
-async function register(userId, name, password) {
+async function register(userId, name, password, email) {
   try {
     const response = await fetch(apiUrl('/api/auth/register'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, name, password }),
+      body: JSON.stringify({ userId, name, password, email: email || undefined }),
     });
     const data = await response.json().catch(() => ({}));
 
     if (response.status === 201 && data.token) {
       applySession(data);
-      msg('ok', '가입이 완료되었습니다: ' + data.name);
-      return { ok: true };
+      return {
+        ok: true,
+        email: data.email,
+        emailVerificationRequired: Boolean(data.emailVerificationRequired),
+      };
     }
 
     const messages = {
       USER_EXISTS: '이미 사용 중인 사용자 ID입니다.',
+      EMAIL_EXISTS: '이미 등록된 이메일입니다.',
+      EMAIL_REQUIRED: data.error,
+      INVALID_EMAIL: data.error,
       WEAK_PASSWORD: data.error,
       INVALID_USER_ID: data.error,
       INVALID_NAME: data.error,
@@ -3403,6 +3618,70 @@ async function register(userId, name, password) {
     console.error('Register error:', err);
     msg('bad', '서버에 연결할 수 없습니다.');
     return { ok: false, error: '서버에 연결할 수 없습니다.' };
+  }
+}
+
+// 인증 메일 재전송 안내 (계정 존재 여부를 노출하지 않는 메시지 사용)
+function showVerifyEmailPrompt(email) {
+  const target = email || (currentUser && currentUser.email);
+  if (!target) {
+    msg('warn', '등록된 이메일로 인증 링크를 다시 보내 주세요.');
+    return;
+  }
+  msg('warn', '인증 메일을 ' + target + ' (으)로 다시 보냈는지 확인하세요.');
+  doResendVerification(target);
+}
+
+async function doResendVerification(email) {
+  try {
+    const res = await fetch(apiUrl('/api/auth/resend-verification'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const data = await res.json().catch(() => ({}));
+    // 서버는 계정 존재 여부를 노출하지 않는 동일 메시지를 반환한다
+    msg('ok', data.message || '요청이 접수되었습니다. 등록된 이메일이라면 링크를 보냈습니다.');
+  } catch (e) {
+    msg('bad', '서버에 연결할 수 없습니다.');
+  }
+}
+
+// 레거시 계정(비밀번호 미설정) 초기화 안내
+function showPasswordSetupPrompt(userId) {
+  const box = document.getElementById('forgotBox');
+  const emailField = document.getElementById('forgotEmail');
+  if (box && emailField) {
+    box.style.display = 'block';
+    emailField.value = currentUser && currentUser.email ? currentUser.email : '';
+    box.querySelector('.auth-hint, [data-hint]');
+  }
+  msg('warn', '등록된 이메일로 비밀번호 설정 링크를 요청하세요.');
+  pendingSetupUserId = userId;
+  const title = document.getElementById('forgotTitle');
+  if (title) title.textContent = '비밀번호 설정 요청';
+}
+
+// 레거시 계정 비밀번호 설정 링크 요청
+async function doRequestPasswordSetup() {
+  const email = document.getElementById('forgotEmail').value.trim();
+  const userId = pendingSetupUserId || document.getElementById('authUserId').value.trim();
+  if (!email || !userId) {
+    showAuthError('아이디와 이메일을 모두 입력하세요.');
+    return;
+  }
+  try {
+    const res = await fetch(apiUrl('/api/auth/setup-password'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, email }),
+    });
+    const data = await res.json().catch(() => ({}));
+    msg('ok', data.message || '요청이 접수되었습니다. 계정 정보가 일치하면 링크를 보냈습니다.');
+    document.getElementById('forgotEmail').value = '';
+    pendingSetupUserId = null;
+  } catch (e) {
+    msg('bad', '서버에 연결할 수 없습니다.');
   }
 }
 
@@ -4307,14 +4586,58 @@ function setWsUrl(url) {
 // Socket.IO 초기화 (실시간 통신 및 WebRTC 시그널링)
 // 서버는 별도 포트(기본 8081)에서 동작하므로 백엔드 주소를 명시해야 한다.
 // 리버스 프록시로 동일 origin이면 TEV1_SERVER_URL을 비워도 된다.
-const TEV1_SERVER_URL = window.TEV1_SERVER_URL || 'http://localhost:8081';
-const socketIO = (typeof io === 'function')
-  ? io(TEV1_SERVER_URL, { transports: ['websocket', 'polling'], upgrade: true })
-  : null;
+// 서버 주소 결정: window.__TEV1__ > window.TEV1_SERVER_URL > meta > window.location.origin
+function resolveServerUrl() {
+  const injected = (window.__TEV1__ && window.__TEV1__.serverUrl) || '';
+  if (injected) return String(injected).replace(/\/+$/, '');
 
-if (!socketIO) {
-  console.error('Socket.IO 클라이언트를 불러오지 못했습니다. /socket.io/socket.io.js 경로를 확인하세요.');
+  const global = (typeof TEV1_SERVER_URL !== 'undefined' && TEV1_SERVER_URL) || '';
+  if (global && global !== 'null' && global !== 'undefined') return String(global).replace(/\/+$/, '');
+
+  const meta = document.querySelector('meta[name="tev1-server-url"]');
+  if (meta && meta.content) return meta.content.replace(/\/+$/, '');
+
+  // 리버스 프록시로 동일 origin이면 상대경로가 가장 안전하다
+  return '';
 }
+
+const TEV1_SERVER_URL_RESOLVED = resolveServerUrl();
+
+// Socket.IO 클라이언트를 서버와 같은 origin에서 동적으로 로드한다.
+// 정적 script src 태그(하드코딩 localhost)는 배포 환경에서 항상 실패하므로 쓰지 않는다.
+const socketClientUrl = (TEV1_SERVER_URL_RESOLVED || window.location.origin) + '/socket.io/socket.io.js';
+
+function loadSocketClient() {
+  return new Promise((resolve, reject) => {
+    if (typeof io === 'function') return resolve(io);
+    const script = document.createElement('script');
+    script.src = socketClientUrl;
+    script.async = true;
+    script.onload = () => (typeof io === 'function' ? resolve(io) : reject(new Error('io 미정의')));
+    script.onerror = () => reject(new Error('Socket.IO 클라이언트 로드 실패: ' + socketClientUrl));
+    document.head.appendChild(script);
+  });
+}
+
+let socketIO = null;
+let socketLoadError = null;
+
+(async function initSocket() {
+  try {
+    const ioFn = await loadSocketClient();
+    // 빈 문자열이면 동일 origin 연결
+    socketIO = ioFn(TEV1_SERVER_URL_RESOLVED || undefined, {
+      transports: ['websocket', 'polling'],
+      upgrade: true,
+    });
+    window.socketIO = socketIO;
+  } catch (e) {
+    socketLoadError = e;
+    console.error('[TEV1] Socket.IO 초기화 실패:', e.message, '| 시도 주소:', socketClientUrl);
+    // WebRTC/실시간 기능은 로그인 없이도 코드를 방어적으로 참조하므로 null로 남긴다
+    socketIO = null;
+  }
+})();
 </script>
 
 <script>

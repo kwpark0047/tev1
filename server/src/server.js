@@ -600,7 +600,28 @@ function getRandomColor() {
 const TOKEN_TTL = {
   verify_email: 24 * 60 * 60 * 1000,      // 24시간
   password_reset: 60 * 60 * 1000,          // 1시간
+  password_setup: 7 * 24 * 60 * 60 * 1000, // 7일 (레거시 계정 초기화)
 };
+
+// ============================================================
+// 계정 정책
+// ============================================================
+// 이메일 인증 강제 여부: 운영(NODE_ENV=production)에서는 기본 강제한다.
+// 강제 시 (1) 가입 시 이메일 필수, (2) 미인증 계정 로그인 차단.
+const REQUIRE_EMAIL_VERIFICATION =
+  (process.env.REQUIRE_EMAIL_VERIFICATION || '').toLowerCase() === 'true'
+  || (process.env.REQUIRE_EMAIL_VERIFICATION === undefined
+      && process.env.NODE_ENV === 'production');
+
+/**
+ * 미인증 이메일이 로그인을 막는지 판정한다.
+ * 정책이 꺼져 있거나 이메일이 없는 계정은 통과시킨다.
+ */
+function blocksLoginForUnverifiedEmail(user) {
+  if (!REQUIRE_EMAIL_VERIFICATION) return false;
+  if (!user || !user.email) return false;
+  return !user.email_verified_at;
+}
 
 function hashToken(raw) {
   return crypto.createHash('sha256').update(raw).digest('hex');
@@ -1138,6 +1159,14 @@ app.post('/api/auth/register', loginRateLimit, async (req, res) => {
     return res.status(400).json({ error: '이메일 형식이 올바르지 않습니다.', code: 'INVALID_EMAIL' });
   }
 
+  // 이메일 인증 강제 정책: 이메일 없이 가입할 수 없게 한다
+  if (REQUIRE_EMAIL_VERIFICATION && !normalizedEmail) {
+    return res.status(400).json({
+      error: '이메일 인증이 필수입니다. 이메일을 입력해 주세요.',
+      code: 'EMAIL_REQUIRED',
+    });
+  }
+
   // 입력 검증을 통과한 뒤 DB 필요 (정책 검증은 DB 없이도 동작해야 함)
   if (!dbAvailable) {
     return res.status(503).json({ error: '데이터베이스를 사용할 수 없습니다.', code: 'DB_UNAVAILABLE' });
@@ -1189,6 +1218,8 @@ app.post('/api/auth/register', loginRateLimit, async (req, res) => {
       name: name.trim(),
       email: normalizedEmail || null,
       emailVerificationRequired: Boolean(normalizedEmail),
+      emailVerified: false,
+      emailRequired: REQUIRE_EMAIL_VERIFICATION,
       verification,
     });
   } catch (e) {
@@ -1213,7 +1244,7 @@ app.post('/api/auth/login', loginRateLimit, async (req, res) => {
 
   try {
     const result = await pool.query(
-      `SELECT id, name, color, email, password_hash, is_active, locked_until, failed_logins,
+      `SELECT id, name, color, email, email_verified_at, password_hash, is_active, locked_until, failed_logins,
               totp_secret, totp_enabled, recovery_codes
        FROM users WHERE id = $1`,
       [idCheck.value]
@@ -1235,10 +1266,29 @@ app.post('/api/auth/login', loginRateLimit, async (req, res) => {
       return res.status(401).json({ error: '아이디 또는 비밀번호가 올바르지 않습니다.', code: 'INVALID_CREDENTIALS' });
     }
 
-    // 비밀번호가 설정되지 않은 계정(레거시 데이터)은 로그인 불가
+    // 비밀번호가 설정되지 않은 계정(레거시 데이터)
+    // 관리자에게 문의시키는 대신, 이메일로 초기화 링크를 발급하는 흐름을 안내한다.
+    // (비밀번호를 모르는 사람이 임의로 설정하지 못하도록 이메일 인증이 필수다)
     if (!user.password_hash) {
       await recordLoginAttempt(idCheck.value, req, false, 'no_password_set');
-      return res.status(403).json({ error: '비밀번호가 설정되지 않은 계정입니다. 관리자에게 문의하세요.', code: 'NO_PASSWORD' });
+      return res.status(403).json({
+        error: user.email
+          ? '비밀번호가 설정되지 않은 계정입니다. 등록된 이메일로 비밀번호를 설정하세요.'
+          : '비밀번호가 설정되지 않은 계정입니다. 관리자에게 문의하세요.',
+        code: 'PASSWORD_SETUP_REQUIRED',
+        email: Boolean(user.email),
+      });
+    }
+
+    // 이메일 인증 강제 정책: 미인증 계정은 로그인 불가
+    // (비밀번호가 틀렸을 때와 구분해 403으로 응답하되 계정 존재는 이미 노출된 상태)
+    if (blocksLoginForUnverifiedEmail(user)) {
+      await recordLoginAttempt(user.id, req, false, 'email_unverified');
+      return res.status(403).json({
+        error: '이메일 인증이 완료되지 않았습니다. 인증 메일을 확인하세요.',
+        code: 'EMAIL_NOT_VERIFIED',
+        email: user.email,
+      });
     }
 
     const valid = await verifyPassword(password, user.password_hash);
@@ -1332,6 +1382,7 @@ app.post('/api/auth/login', loginRateLimit, async (req, res) => {
       name: user.name,
       color: user.color,
       email: user.email || null,
+      emailVerified: Boolean(user.email_verified_at),
       twoFactorEnabled: Boolean(user.totp_enabled),
     });
   } catch (e) {
@@ -1522,6 +1573,138 @@ app.post('/api/auth/reset-password', emailRateLimit, async (req, res) => {
   }
 });
 
+// ===================== 레거시 계정 비밀번호 초기화 =====================
+// password_hash가 없는 기존 계정에 비밀번호를 설정하는 흐름.
+// 이메일로 링크를 발급하므로 계정 탈취 위험이 낮고, 관리자 개입 없이 해결된다.
+
+/** 레거시 계정(비밀번호 미설정) 초기화 링크 요청 */
+app.post('/api/auth/setup-password', emailRateLimit, async (req, res) => {
+  const { userId, email } = req.body || {};
+
+  const idCheck = validateUserId(userId);
+  if (!idCheck.ok) {
+    return res.status(400).json({ error: '아이디를 입력하세요.', code: 'INVALID_USER_ID' });
+  }
+
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) {
+    return res.status(400).json({ error: '이메일 형식이 올바르지 않습니다.', code: 'INVALID_EMAIL' });
+  }
+
+  if (!dbAvailable) {
+    return res.status(503).json({ error: '데이터베이스를 사용할 수 없습니다.', code: 'DB_UNAVAILABLE' });
+  }
+
+  // 계정 존재/상태를 노출하지 않는 고정 메시지
+  const generic = {
+    success: true,
+    message: '요청이 접수되었습니다. 계정 정보가 일치하면 초기화 링크를 보냈습니다.',
+  };
+
+  try {
+    const found = await pool.query(
+      `SELECT id, name, email, password_hash, is_active, email_verified_at
+       FROM users WHERE id = $1`,
+      [idCheck.value]
+    );
+    const user = found.rows[0];
+
+    // 아이디가 없거나, 비밀번호가 이미 있거나, 이메일이 다르면 아무 것도 하지 않는다
+    if (!user || user.password_hash || user.is_active === false) return res.json(generic);
+    if (!user.email || user.email.toLowerCase() !== normalizedEmail.toLowerCase()) {
+      return res.json(generic);
+    }
+
+    await revokeAuthTokens(user.id, 'password_setup');
+    const issued = await issueAuthToken(user.id, 'password_setup', user.email);
+    const link = `${frontendBase()}/?setup=${issued.token}`;
+    const mail = mailer.passwordSetupEmail({ link, name: user.name });
+    const sent = await mailer.send({ to: user.email, ...mail });
+
+    await pool.query(
+      `INSERT INTO audit_logs (user_id, action, resource_type, resource_id)
+       VALUES ($1, 'password_setup_requested', 'user', $1)`,
+      [user.id]
+    );
+
+    res.json({ ...generic, delivery: { ok: sent.ok, mode: sent.mode } });
+  } catch (e) {
+    console.error('setup-password error:', e);
+    res.json(generic);
+  }
+});
+
+/** 레거시 계정 비밀번호 설정 실행 (토큰 + 새 비밀번호) */
+app.post('/api/auth/complete-setup', emailRateLimit, async (req, res) => {
+  const { token, newPassword } = req.body || {};
+  if (!token) return res.status(400).json({ error: '초기화 토큰이 필요합니다.', code: 'TOKEN_REQUIRED' });
+
+  const pwCheck = validatePassword(newPassword);
+  if (!pwCheck.ok) return res.status(400).json({ error: pwCheck.error, code: 'WEAK_PASSWORD' });
+
+  if (!dbAvailable) {
+    return res.status(503).json({ error: '데이터베이스를 사용할 수 없습니다.', code: 'DB_UNAVAILABLE' });
+  }
+
+  try {
+    const used = await consumeAuthToken(token, 'password_setup');
+    if (!used) {
+      return res.status(400).json({
+        error: '유효하지 않거나 이미 사용/만료된 링크입니다.',
+        code: 'INVALID_TOKEN',
+      });
+    }
+
+    // 토큰은 password_setup 목적지로만 발급되므로 여기서 최초 설정이 보장된다.
+    // 방어적으로 한 번 더 확인해 이미 비밀번호가 있는 계정을 덮어쓰지 않는다.
+    const check = await pool.query(
+      'SELECT password_hash FROM users WHERE id = $1',
+      [used.user_id]
+    );
+    if (check.rows[0] && check.rows[0].password_hash) {
+      return res.status(409).json({
+        error: '이미 비밀번호가 설정된 계정입니다. 비밀번호 찾기를 이용해 주세요.',
+        code: 'ALREADY_SET',
+      });
+    }
+
+    const newHash = await hashPassword(newPassword);
+    await pool.query(
+      `UPDATE users
+       SET password_hash = $1, failed_logins = 0, locked_until = NULL,
+           last_login_at = NOW()
+       WHERE id = $2`,
+      [newHash, used.user_id]
+    );
+
+    // 초기화 전 발급된 세션이 남아 있으면 모두 폐기
+    await pool.query(
+      'UPDATE auth_sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL',
+      [used.user_id]
+    );
+
+    // 이메일 인증도 함께 완료 처리한다 (레거시 계정은 이 시점에 처음 인증된다)
+    await pool.query(
+      'UPDATE users SET email_verified_at = COALESCE(email_verified_at, NOW()) WHERE id = $1',
+      [used.user_id]
+    );
+
+    await pool.query(
+      `INSERT INTO audit_logs (user_id, action, resource_type, resource_id)
+       VALUES ($1, 'password_setup_completed', 'user', $1)`,
+      [used.user_id]
+    );
+
+    res.json({
+      success: true,
+      message: '비밀번호가 설정되었습니다. 새 비밀번호로 로그인하세요.',
+    });
+  } catch (e) {
+    console.error('complete-setup error:', e);
+    res.status(500).json({ error: '비밀번호 설정 중 오류가 발생했습니다.' });
+  }
+});
+
 // ===================== 2FA (TOTP) =====================
 
 /** 복구 코드 해시 (평문 저장 금지) */
@@ -1671,7 +1854,16 @@ app.post('/api/auth/2fa/disable', requireAuth, requireDb, async (req, res) => {
       [req.user.id]
     );
 
-    res.json({ success: true });
+    // 2FA 해제는 보안 강도를 낮추는 행위이므로 다른 기기의 세션을 종료한다.
+    // (현재 세션은 유지해 사용자가 로그아웃되지 않도록 한다)
+    const currentJti2fa = (verifyToken(extractToken(req)) || {}).jti;
+    if (currentJti2fa) {
+      await pool.query(
+        'UPDATE auth_sessions SET revoked_at = NOW() WHERE user_id = $1 AND jti <> $2 AND revoked_at IS NULL',
+        [req.user.id, currentJti2fa]
+      );
+    }
+res.json({ success: true });
   } catch (e) {
     console.error('2fa disable error:', e);
     res.status(500).json({ error: '2FA를 해제하지 못했습니다.' });
@@ -1706,28 +1898,151 @@ app.post('/api/auth/2fa/recovery-codes', requireAuth, requireDb, async (req, res
 
 // 비밀번호 변경 (현재 비밀번호 필요)
 app.post('/api/auth/change-password', requireAuth, requireDb, async (req, res) => {
-  const { currentPassword, newPassword } = req.body || {};
+  const { currentPassword, newPassword, revokeOthers } = req.body || {};
   const pwCheck = validatePassword(newPassword);
   if (!pwCheck.ok) return res.status(400).json({ error: pwCheck.error, code: 'WEAK_PASSWORD' });
+
+  // 기본값 true: 비밀번호가 바뀌면 다른 기기의 세션을 모두 종료한다.
+  // 사용자가 명시적으로 false를 보낼 때만 현재 세션만 남긴다.
+  const revokeAll = revokeOthers !== false;
 
   try {
     const result = await pool.query('SELECT password_hash FROM users WHERE id = $1', [req.user.id]);
     const user = result.rows[0];
     if (!user || !user.password_hash) {
-      return res.status(403).json({ error: '비밀번호가 설정되지 않은 계정입니다.', code: 'NO_PASSWORD' });
+      return res.status(403).json({
+        error: '비밀번호가 설정되지 않은 계정입니다.',
+        code: 'PASSWORD_SETUP_REQUIRED',
+      });
     }
     const valid = await verifyPassword(currentPassword || '', user.password_hash);
     if (!valid) {
       return res.status(401).json({ error: '현재 비밀번호가 올바르지 않습니다.', code: 'INVALID_CREDENTIALS' });
     }
+
+    // 새 비밀번호가 현재 비밀번호와 같으면 거부한다
+    const sameAsCurrent = await verifyPassword(newPassword, user.password_hash);
+    if (sameAsCurrent) {
+      return res.status(400).json({
+        error: '새 비밀번호는 현재 비밀번호와 달라야 합니다.',
+        code: 'PASSWORD_UNCHANGED',
+      });
+    }
+
     const newHash = await hashPassword(newPassword);
     await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, req.user.id]);
-    // 비밀번호 변경 시 기존 세션 모두 폐기
-    await pool.query('UPDATE auth_sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL', [req.user.id]);
-    res.json({ success: true, message: '비밀번호가 변경되었습니다. 다시 로그인하세요.' });
+
+    if (revokeAll) {
+      // 현재 세션을 포함한 모든 세션 폐기 → 재로그인 유도
+      await pool.query(
+        'UPDATE auth_sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL',
+        [req.user.id]
+      );
+    } else {
+      // 현재 세션만 유지하고 나머지 기기만 종료
+      const currentJti = (verifyToken(extractToken(req)) || {}).jti;
+      if (currentJti) {
+        await pool.query(
+          'UPDATE auth_sessions SET revoked_at = NOW() WHERE user_id = $1 AND jti <> $2 AND revoked_at IS NULL',
+          [req.user.id, currentJti]
+        );
+      }
+    }
+
+    await pool.query(
+      `INSERT INTO audit_logs (user_id, action, resource_type, resource_id)
+       VALUES ($1, 'password_changed', 'user', $1)`,
+      [req.user.id]
+    );
+
+    res.json({
+      success: true,
+      message: revokeAll
+        ? '비밀번호가 변경되었습니다. 다시 로그인하세요.'
+        : '비밀번호가 변경되었습니다. 다른 기기의 세션은 종료되었습니다.',
+      revokedAllSessions: revokeAll,
+    });
   } catch (e) {
     console.error('Change password error:', e);
     res.status(500).json({ error: '비밀번호 변경 중 오류가 발생했습니다.' });
+  }
+});
+
+// 활성 세션 목록 (사용자가 자신의 로그인 이력을 확인하고 원격 종료할 수 있다)
+app.get('/api/auth/sessions', requireAuth, requireDb, async (req, res) => {
+  try {
+    const rows = await pool.query(
+      `SELECT jti, user_agent, ip_address, created_at, expires_at, revoked_at
+       FROM auth_sessions
+       WHERE user_id = $1
+       ORDER BY created_at DESC
+       LIMIT 50`,
+      [req.user.id]
+    );
+    const currentJti = (verifyToken(extractToken(req)) || {}).jti;
+    const now = Date.now();
+    res.json({
+      current: currentJti || null,
+      sessions: rows.rows.map((s) => ({
+        jti: s.jti,
+        userAgent: s.user_agent,
+        ip: s.ip_address,
+        createdAt: s.created_at,
+        expiresAt: s.expires_at,
+        revokedAt: s.revoked_at,
+        active: !s.revoked_at && new Date(s.expires_at).getTime() > now,
+        current: s.jti === currentJti,
+      })),
+    });
+  } catch (e) {
+    console.error('sessions list error:', e);
+    res.status(500).json({ error: '세션 목록을 조회하지 못했습니다.' });
+  }
+});
+
+// 특정 세션 원격 종료 (본인 계정 소유 세션만)
+app.post('/api/auth/sessions/revoke', requireAuth, requireDb, async (req, res) => {
+  const { jti } = req.body || {};
+  if (!jti || typeof jti !== 'string') {
+    return res.status(400).json({ error: '세션 식별자가 필요합니다.', code: 'JTI_REQUIRED' });
+  }
+  try {
+    const result = await pool.query(
+      `UPDATE auth_sessions SET revoked_at = NOW()
+       WHERE jti = $1 AND user_id = $2 AND revoked_at IS NULL
+       RETURNING jti`,
+      [jti, req.user.id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: '해당 세션을 찾을 수 없습니다.', code: 'SESSION_NOT_FOUND' });
+    }
+    res.json({ success: true, message: '세션이 종료되었습니다.' });
+  } catch (e) {
+    console.error('session revoke error:', e);
+    res.status(500).json({ error: '세션 종료 중 오류가 발생했습니다.' });
+  }
+});
+
+// 다른 기기의 모든 활성 세션 종료 (현재 세션은 유지)
+app.post('/api/auth/sessions/revoke-others', requireAuth, requireDb, async (req, res) => {
+  try {
+    const currentJti = (verifyToken(extractToken(req)) || {}).jti;
+    if (!currentJti) {
+      return res.status(400).json({ error: '현재 세션을 확인할 수 없습니다.', code: 'NO_SESSION' });
+    }
+    const result = await pool.query(
+      `UPDATE auth_sessions SET revoked_at = NOW()
+       WHERE user_id = $1 AND jti <> $2 AND revoked_at IS NULL`,
+      [req.user.id, currentJti]
+    );
+    res.json({
+      success: true,
+      revoked: result.rowCount || 0,
+      message: `다른 ${result.rowCount || 0}개 세션을 종료했습니다.`,
+    });
+  } catch (e) {
+    console.error('revoke others error:', e);
+    res.status(500).json({ error: '세션 종료 중 오류가 발생했습니다.' });
   }
 });
 

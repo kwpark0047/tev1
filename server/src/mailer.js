@@ -142,6 +142,22 @@ function passwordResetEmail({ link, name }) {
   };
 }
 
+function passwordSetupEmail({ link, name }) {
+  return {
+    subject: '[TEV1] 비밀번호 설정 안내',
+    text: `${name || '안녕하세요'}, 계정 초기화를 위해 아래 링크를 열어 새 비밀번호를 설정해 주세요.\n\n${link}\n\n7일 후 만료됩니다. 요청하지 않으셨다면 이 메일을 무시하세요.`,
+    html: layout('비밀번호 설정', `
+      <p style="margin:0 0 16px;line-height:1.7;">${htmlEscape(name || '안녕하세요')}, 계정 로그인을 위한 비밀번호 설정이 요청되었습니다.</p>
+      <p style="margin:0 0 20px;line-height:1.7;color:#4a5065;">아래 버튼을 눌러 새 비밀번호를 설정해 주세요.</p>
+      ${BUTTON(link, '비밀번호 설정하기')}
+      <p style="margin:20px 0 0;font-size:12px;color:#8b90a0;word-break:break-all;">버튼이 동작하지 않으면 아래 주소를 복사해 사용하세요:<br>${htmlEscape(link)}</p>
+      <p style="margin:14px 0 0;font-size:12px;color:#c0392b;font-weight:600;">
+        본인이 요청하지 않았다면 이 링크를 사용하지 마세요. 7일 후 만료됩니다.
+      </p>
+    `),
+  };
+}
+
 function orgInviteEmail({ link, orgName, role, inviterName }) {
   const roleKo = { admin: '관리자', member: '멤버', viewer: '열람자' }[role] || role;
   return {
@@ -188,6 +204,7 @@ async function verify() {
 }
 
 module.exports = {
+  passwordSetupEmail,
   send,
   verificationEmail,
   passwordResetEmail,

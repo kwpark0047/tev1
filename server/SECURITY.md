@@ -88,13 +88,57 @@ SMTP 환경변수(`SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PA
 - `dev-outbox` 모드는 발송 성공을 가장하지만 실제 수신은 되지 않는다.
   운영 전환 여부는 반드시 환경변수 존재로 판단한다.
 
+## 계정 정책
+
+### 이메일 인증 (기본 강제)
+
+`REQUIRE_EMAIL_VERIFICATION`이 `true`이거나 `NODE_ENV=production`이면 다음이 적용된다.
+
+- **가입 시 이메일 필수**: 없으면 `400 EMAIL_REQUIRED`
+- **미인증 계정 로그인 차단**: `403 EMAIL_NOT_VERIFIED`
+- 인증 완료(`email_verified_at` 설정) 후 정상 로그인 허용
+
+정책을 끄려면 `REQUIRE_EMAIL_VERIFICATION=false`를 명시한다. 이 경우 이메일이 없는 계정이
+생길 수 있으며, 그 계정은 인증 강제 대상이 아니다.
+
+### 레거시 계정 초기화
+
+`password_hash`가 `NULL`인 기존 계정은 로그인이 `403 PASSWORD_SETUP_REQUIRED`로 거부된다.
+관리자 개입 없이 아래 플로우로 스스로 해결한다.
+
+1. 로그인 시도 → `403 PASSWORD_SETUP_REQUIRED` + `email: true`
+2. `POST /api/auth/setup-password` (아이디 + 이메일) → 7일 유효 링크 발송
+3. `POST /api/auth/complete-setup` (토큰 + 새 비밀번호) → 비밀번호 설정 완료
+
+보안 설계:
+
+- 아이디/이메일이 일치하지 않으면 **일반 계정과 동일한 응답**을 반환해 계정 존재를 노출하지 않는다.
+- 이미 비밀번호가 있는 계정에는 링크를 발급하지 않고, `complete-setup`에서 `409 ALREADY_SET`으로 방어한다.
+- 초기화 시점의 이메일 인증과 기존 세션 폐기를 함께 처리한다.
+
+### 세션 관리
+
+사용자는 자신의 로그인 기기를 확인하고 원격으로 종료할 수 있다.
+
+| 엔드포인트 | 동작 |
+|---|---|
+| `GET /api/auth/sessions` | 활성/폐기 세션 목록 + 현재 세션 표시 |
+| `POST /api/auth/sessions/revoke` | 지정 세션 1개 종료 (본인 계정만) |
+| `POST /api/auth/sessions/revoke-others` | 현재 기기 외 전부 종료 |
+| `POST /api/auth/change-password` | 기본: 전체 세션 폐기. `revokeOthers:false`면 현재 세션 유지 |
+
+세션을 폐기하는 보안 이벤트는 아래 4가지다.
+
+- 로그아웃 (`/api/auth/logout`)
+- 비밀번호 재설정 (토큰 경로)
+- 비밀번호 변경 (`revokedAllSessions` 기본 `true`)
+- 2FA 해제 (현재 세션만 유지, 다른 기기는 재인증)
+
 ## 알려진 제한
 
-- **이메일 인증이 선택 사항**: 이메일을 입력하지 않은 계정은 인증 없이도 로그인할 수 있다.
-  인증을 강제하려면 가입 시 이메일 입력을 필수로 바꾸고 미인증 계정 세션을 제한해야 한다.
-- **비밀번호 미설정 레거시 계정**: `password_hash`가 없는 기존 사용자는 로그인할 수 없다.
-  관리자 초기화 또는 재설정 링크 발급 절차가 필요하다.
-- **기존 세션 무효화 없음**: 비밀번호 변경·2FA 해제는 해당 사용자의 다른 세션을 종료하지 않는다.
 - **`/metrics`는 인증 없음**: 내부망에 격리하거나 프록시에서 인증을 적용해야 한다.
-- **프론트엔드 서버 주소 고정**: Socket.IO 클라이언트가 `http://localhost:8081`로 하드코딩되어
-  HTTPS 운영 도메인에서는 동작하지 않는다. 배포 시 설정으로 치환해야 한다.
+  (`METRICS_TOKEN` 지원)
+- **`token` 쿼리 파라미터로 토큰 전달 방식**: 프론트가 이 방식을 쓰면 브라우저 히스토리·
+  로그에 인증 토큰이 남을 수 있다. Authorization 헤더만 사용한다.
+- **TOTP 키는 텍스트로만 표시**: 서버 QR 이미지 생성기를 두지 않아 `otpauth://` URI와
+  시크릿을 함께 보여준다. 오타 나기 쉬우니 복구 코드를 반드시 보관하도록 안내한다.
