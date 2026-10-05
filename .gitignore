@@ -10,6 +10,11 @@ node_modules/
 
 # Logs
 logs/
+
+# dev-outbox 메일 파일 (인증·재설정 토큰 평문 포함 - 절대 커밋 금지)
+outbox.jsonl
+*-outbox.jsonl
+server/outbox.jsonl
 *.log
 npm-debug.log*
 

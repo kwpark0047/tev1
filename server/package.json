@@ -1,14 +1,14 @@
 {
   "name": "tev1-websocket-server",
-  "version": "1.0.1",
+  "version": "1.2.0",
   "description": "TEV1 realtime collaboration server (Socket.IO + PostgreSQL + Redis)",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "test": "node tests/frontend-check.js && node tests/smoke.js",
+    "test": "node tests/frontend-check.js && node tests/totp.test.js && node tests/smoke.js",
     "test:watch": "jest --watch",
-    "test:ci": "node tests/frontend-check.js && node tests/smoke.js",
+    "test:ci": "node tests/frontend-check.js && node tests/totp.test.js && node tests/smoke.js",
     "lint": "eslint src/",
     "format": "prettier --write src/",
     "docker:build": "docker build -t tev1-ws .",
@@ -16,7 +16,8 @@
     "docker:down": "docker-compose down",
     "docker:logs": "docker-compose logs -f",
     "test:frontend": "node tests/frontend-check.js",
-    "test:smoke": "node tests/smoke.js"
+    "test:smoke": "node tests/smoke.js",
+    "test:totp": "node tests/totp.test.js"
   },
   "keywords": [
     "websocket",
@@ -34,9 +35,10 @@
     "googleapis": "^183.0.0",
     "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.2",
+    "nodemailer": "^10.0.14",
     "pg": "^8.23.1",
     "socket.io": "^4.8.4",
-    "uuid": "^9.0.1",
+    "uuid": "^11.1.1",
     "web-push": "^3.6.7"
   },
   "devDependencies": {

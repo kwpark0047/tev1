@@ -2057,6 +2057,11 @@ updateOllamaStatus(true);
           <input id="authName" type="text" autocomplete="name"
                  style="width:100%;margin-top:4px;padding:8px;background:var(--ink);color:inherit;border:1px solid var(--line);border-radius:3px;">
         </label>
+        <label id="authEmailRow" style="display:none;margin-bottom:10px;font-size:12px;">
+          이메일 <span style="color:#8b90b8;">(선택 · 분실 시 복구에 사용)</span>
+          <input id="authEmail" type="email" autocomplete="email"
+                 style="width:100%;margin-top:4px;padding:8px;background:var(--ink);color:inherit;border:1px solid var(--line);border-radius:3px;">
+        </label>
         <label style="display:block;margin-bottom:10px;font-size:12px;">
           비밀번호
           <input id="authPassword" type="password" required autocomplete="current-password"
@@ -2070,8 +2075,19 @@ updateOllamaStatus(true);
           <input id="authPasswordConfirm" type="password" autocomplete="new-password"
                  style="width:100%;margin-top:4px;padding:8px;background:var(--ink);color:inherit;border:1px solid var(--line);border-radius:3px;">
         </label>
+        <label id="authTotpRow" style="display:none;margin-bottom:10px;font-size:12px;">
+          <span id="authTotpLabel">2단계 인증 코드</span>
+          <input id="authTotp" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456"
+                 style="width:100%;margin-top:4px;padding:8px;background:var(--ink);color:inherit;border:1px solid var(--line);border-radius:3px;letter-spacing:3px;">
+          <span style="display:block;color:#8b90b8;font-size:11px;margin-top:4px;">
+            인증앱의 6자리 코드 또는 복구 코드를 입력하세요.
+          </span>
+        </label>
         <div id="authError" style="display:none;color:#d9524a;font-size:12px;margin-bottom:10px;" role="alert"></div>
         <button type="submit" id="authSubmit" class="btn" style="width:100%;">로그인</button>
+        <div style="text-align:center;margin-top:10px;font-size:12px;">
+          <button class="btn ghost tiny" id="forgotPwBtn" onclick="openForgotPassword()">비밀번호를 잊으셨나요?</button>
+        </div>
       </form>
 
       <div style="text-align:center;margin-top:12px;font-size:12px;">
@@ -2082,24 +2098,95 @@ updateOllamaStatus(true);
         <div style="font-size:12px;margin-bottom:8px;">비밀번호 변경</div>
         <input id="authCurrentPw" type="password" placeholder="현재 비밀번호" autocomplete="current-password"
                style="width:100%;margin-bottom:6px;padding:7px;background:var(--ink);color:inherit;border:1px solid var(--line);border-radius:3px;">
-        <input id="authNewPw" type="password" placeholder="새 비밀번호" autocomplete="new-password"
+        <input id="authNewPw" type="password" placeholder="새 비밀번호 (10자 이상)" autocomplete="new-password"
                style="width:100%;margin-bottom:6px;padding:7px;background:var(--ink);color:inherit;border:1px solid var(--line);border-radius:3px;">
         <button class="btn ghost tiny" onclick="doChangePassword()">비밀번호 변경</button>
+
+        <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line);">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+            <div style="font-size:12px;">2단계 인증 (2FA)</div>
+            <span style="display:flex;gap:4px;align-items:center;">
+              <button class="btn ghost tiny" onclick="doSetup2FA()" title="2단계 인증 설정">설정</button>
+              <span id="faStatusBadge" class="badge demo" style="font-size:11px;">확인 중...</span>
+            </span>
+          </div>
+          <div id="faPanel" style="margin-top:8px;display:none;">
+            <div id="faSetupBox">
+              <div style="font-size:11px;color:#8b90b8;margin-bottom:6px;line-height:1.6;">
+                Google Authenticator 등의 인증앱에 아래 키를 등록하세요.<br>
+                (키 직접 입력 또는 QR 코드 스캔)
+              </div>
+              <div id="faSecretBox" style="background:var(--ink);border:1px solid var(--line);border-radius:3px;padding:8px;font-size:12px;word-break:break-all;letter-spacing:1px;margin-bottom:8px;"></div>
+              <div id="faQrBox" style="margin-bottom:8px;"></div>
+              <div style="display:flex;gap:6px;">
+                <input id="faSetupCode" type="text" inputmode="numeric" placeholder="앱에 표시된 6자리 코드"
+                       style="flex:1;padding:7px;background:var(--ink);color:inherit;border:1px solid var(--line);border-radius:3px;letter-spacing:2px;">
+                <button class="btn ghost tiny" onclick="doConfirm2FA()">활성화</button>
+              </div>
+            </div>
+            <div id="faActiveBox" style="display:none;">
+              <div style="font-size:11px;color:#8b90b8;line-height:1.6;">
+                2단계 인증이 활성화되어 있습니다.<br>
+                복구 코드 <strong id="faRecoveryLeft">0</strong>개 남음.
+              </div>
+              <div style="display:flex;gap:6px;margin-top:8px;">
+                <input id="faDisableCode" type="text" inputmode="numeric" placeholder="현재 코드"
+                       style="flex:1;padding:7px;background:var(--ink);color:inherit;border:1px solid var(--line);border-radius:3px;">
+                <button class="btn ghost tiny" onclick="doDisable2FA()">해제</button>
+              </div>
+            </div>
+          </div>
+          <div id="faRecoveryCodesBox" style="display:none;margin-top:10px;padding:8px;background:var(--ink);border:1px solid var(--line);border-radius:3px;">
+            <div style="font-size:11px;color:#e0a83a;margin-bottom:6px;">
+              아래 복구 코드를 지금 저장하세요. 각 코드는 한 번만 사용할 수 있습니다.
+            </div>
+            <div id="faRecoveryCodes" class="mono" style="font-size:11px;line-height:1.8;word-break:break-all;"></div>
+            <button class="btn ghost tiny" style="margin-top:8px;" onclick="document.getElementById('faRecoveryCodesBox').style.display='none'">확인</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 비밀번호 찾기 -->
+      <div id="forgotBox" style="display:none;margin-top:16px;padding-top:12px;border-top:1px solid var(--line);">
+        <div style="font-size:12px;margin-bottom:8px;">비밀번호 찾기</div>
+        <input id="forgotEmail" type="email" placeholder="가입할 때 사용한 이메일"
+               style="width:100%;margin-bottom:6px;padding:7px;background:var(--ink);color:inherit;border:1px solid var(--line);border-radius:3px;">
+        <button class="btn ghost tiny" onclick="doForgotPassword()">재설정 링크 받기</button>
+        <button class="btn ghost tiny" onclick="toggleForgotBox()">닫기</button>
       </div>
     </div>
   </div>
 </div>
 
 <script>
-// 인증 모달 (로그인 / 회원가입 / 비밀번호 변경)
+// 인증 모달 (로그인 / 회원가입 / 비밀번호 변경 / 2FA / 비밀번호 찾기)
 let authMode = 'login';
+let authTotpRequired = false;
+
+function toggleForgotBox(show) {
+  const box = document.getElementById('forgotBox');
+  if (!box) return;
+  const next = show === undefined ? box.style.display !== 'block' : show;
+  box.style.display = next ? 'block' : 'none';
+  if (next) setTimeout(() => document.getElementById('forgotEmail')?.focus(), 20);
+}
+
+function openForgotPassword() {
+  toggleForgotBox(true);
+  showAuthError('');
+}
 
 function openAuthModal(mode = 'login') {
+  if (mode === 'login') authTotpRequired = false;
   authMode = mode;
   const modal = document.getElementById('authModal');
   if (!modal) return;
   modal.style.display = 'flex';
+  toggleForgotBox(false);
+  const totpField = document.getElementById('authTotp');
+  if (totpField) totpField.value = '';
   applyAuthMode();
+  if (currentUser) refresh2FAStatus();
   setTimeout(() => document.getElementById('authUserId')?.focus(), 30);
 }
 
@@ -2111,6 +2198,10 @@ function closeAuthModal() {
 
 function applyAuthMode() {
   const isRegister = authMode === 'register';
+  document.getElementById('authEmailRow').style.display = isRegister ? 'block' : 'none';
+  document.getElementById('authTotpRow').style.display = authTotpRequired ? 'block' : 'none';
+  document.getElementById('forgotPwBtn').style.display =
+    authMode === 'register' || authTotpRequired ? 'none' : 'inline-flex';
   document.getElementById('authModalTitle').textContent = isRegister ? '회원가입' : '로그인';
   document.getElementById('authSubmit').textContent = isRegister ? '가입하기' : '로그인';
   document.getElementById('authNameRow').style.display = isRegister ? 'block' : 'none';
@@ -2182,7 +2273,8 @@ document.getElementById('authForm')?.addEventListener('submit', async (e) => {
       }
       result = await register(userId, name, password);
     } else {
-      result = await login(userId, password);
+      const totpCode = document.getElementById('authTotp').value.trim();
+      result = await login(userId, password, totpCode);
     }
 
     if (result.ok) {
@@ -2196,6 +2288,279 @@ document.getElementById('authForm')?.addEventListener('submit', async (e) => {
     btn.textContent = original;
   }
 });
+
+// ===================== 2FA 관리 =====================
+async function refresh2FAStatus() {
+  const badge = document.getElementById('faStatusBadge');
+  if (!badge || !currentToken) return;
+  try {
+    const res = await fetch(apiUrl('/api/auth/2fa/status'), {
+      headers: { Authorization: 'Bearer ' + currentToken },
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    badge.textContent = data.enabled ? '켜짐' : '꺼짐';
+    badge.className = 'badge ' + (data.enabled ? 'ai' : 'demo');
+    const panel = document.getElementById('faPanel');
+    if (panel) panel.style.display = 'block';
+    const setupBox = document.getElementById('faSetupBox');
+    const activeBox = document.getElementById('faActiveBox');
+    if (setupBox) setupBox.style.display = data.enabled ? 'none' : 'block';
+    if (activeBox) activeBox.style.display = data.enabled ? 'block' : 'none';
+    const left = document.getElementById('faRecoveryLeft');
+    if (left) left.textContent = data.recoveryCodesLeft;
+    // 0개면 재발급 유도
+    if (data.enabled && data.recoveryCodesLeft === 0) {
+      msg('warn', '복구 코드가 모두 사용되었습니다. 새 코드를 발급하세요.');
+    }
+  } catch (_) {
+    // 서버 미연결 시에는 상태를 표시하지 않는다
+  }
+}
+
+// 2FA 설정 시작 → 시크릿 표시
+async function doSetup2FA() {
+  if (!currentToken) {
+    openAuthModal('login');
+    return;
+  }
+  try {
+    const res = await fetch(apiUrl('/api/auth/2fa/setup'), {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + currentToken },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      msg('bad', data.error || '2FA 설정을 시작하지 못했습니다.');
+      return;
+    }
+
+    document.getElementById('faPanel').style.display = 'block';
+    document.getElementById('faSetupBox').style.display = 'block';
+    document.getElementById('faActiveBox').style.display = 'none';
+    document.getElementById('faSecretBox').textContent = data.secret;
+    renderQrCode(data.otpauthUri);
+    document.getElementById('faSetupCode').value = '';
+    setTimeout(() => document.getElementById('faSetupCode')?.focus(), 40);
+    msg('ok', '인증앱에 키를 등록한 뒤 코드를 입력하세요.');
+  } catch (e) {
+    msg('bad', '서버에 연결할 수 없습니다.');
+  }
+}
+
+// otpauth URI를 QR 코드로 렌더링 (간단한 구현: 외부 서비스 없이 캔버스 생성)
+// 외부 이미지 요청을 피하기 위해 qrcode 라이브러리를 직접 호출하지 않고,
+// 등록용 URI와 키를 모두 텍스트로 함께 제공한다.
+function renderQrCode(uri) {
+  const box = document.getElementById('faQrBox');
+  if (!box) return;
+  box.innerHTML =
+    '<div style="font-size:11px;color:#8b90b8;line-height:1.6;">' +
+    '인증앱에서 "키 직접 입력"으로 위 키를 등록하세요.<br>' +
+    '<span style="color:#c3c8ea;">QR 코드가 필요하면 아래 주소를 인증앱 "링크 추가"로 입력하세요:</span><br>' +
+    '<code style="display:block;margin-top:4px;font-size:10px;word-break:break-all;color:#c3c8ea;">' +
+    escapeHtml(uri) +
+    '</code></div>';
+}
+
+function showRecoveryCodes(codes) {
+  const box = document.getElementById('faRecoveryCodesBox');
+  const list = document.getElementById('faRecoveryCodes');
+  if (!box || !list) return;
+  list.textContent = codes.join('   ');
+  box.style.display = 'block';
+  refresh2FAStatus();
+}
+
+// 2FA 활성화 확정
+async function doConfirm2FA() {
+  const code = document.getElementById('faSetupCode').value.trim();
+  if (!/^\d{6}$/.test(code)) {
+    showAuthError('인증앱에 표시된 6자리 코드를 입력하세요.');
+    return;
+  }
+  try {
+    const res = await fetch(apiUrl('/api/auth/2fa/confirm'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + currentToken,
+      },
+      body: JSON.stringify({ code }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      showAuthError(data.error || '활성화에 실패했습니다.');
+      return;
+    }
+    showAuthError('');
+    document.getElementById('faSetupCode').value = '';
+    msg('ok', '2단계 인증이 활성화되었습니다.');
+    showRecoveryCodes(data.recoveryCodes || []);
+  } catch (e) {
+    showAuthError('서버에 연결할 수 없습니다.');
+  }
+}
+
+// 2FA 해제 (비밀번호 + 코드)
+async function doDisable2FA() {
+  const code = document.getElementById('faDisableCode').value.trim();
+  const password = prompt('2단계 인증을 해제하려면 현재 비밀번호를 입력하세요:');
+  if (!password) return;
+  try {
+    const res = await fetch(apiUrl('/api/auth/2fa/disable'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + currentToken,
+      },
+      body: JSON.stringify({ password, code }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      msg('bad', data.error || '해제에 실패했습니다.');
+      return;
+    }
+    document.getElementById('faDisableCode').value = '';
+    msg('ok', '2단계 인증이 해제되었습니다.');
+    refresh2FAStatus();
+  } catch (e) {
+    msg('bad', '서버에 연결할 수 없습니다.');
+  }
+}
+
+// ===================== 비밀번호 찾기 =====================
+async function doForgotPassword() {
+  const email = document.getElementById('forgotEmail').value.trim();
+  if (!email) {
+    showAuthError('이메일을 입력하세요.');
+    return;
+  }
+  try {
+    const res = await fetch(apiUrl('/api/auth/forgot-password'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const data = await res.json().catch(() => ({}));
+    // 계정 존재 여부를 노출하지 않는 메시지를 그대로 안내한다
+    msg('ok', data.message || '요청이 접수되었습니다.');
+    document.getElementById('forgotEmail').value = '';
+    toggleForgotBox(false);
+  } catch (e) {
+    msg('bad', '서버에 연결할 수 없습니다.');
+  }
+}
+
+// ===================== URL 토큰 처리 =====================
+// 이메일 인증(?verify=) / 비밀번호 재설정(?reset=) 링크 처리
+async function handleUrlTokens() {
+  let params;
+  try {
+    params = new URLSearchParams(window.location.search);
+  } catch (_) {
+    return;
+  }
+
+  const verifyToken = params.get('verify');
+  if (verifyToken) {
+    try {
+      const res = await fetch(apiUrl('/api/auth/verify-email'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: verifyToken }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        msg('ok', '이메일 인증이 완료되었습니다. 이제 모든 기능을 사용할 수 있습니다.');
+      } else {
+        msg('bad', data.error || '이메일 인증에 실패했습니다.');
+      }
+    } catch (e) {
+      msg('bad', '서버에 연결할 수 없습니다.');
+    }
+    clearUrlParams(['verify']);
+    return;
+  }
+
+  const resetToken = params.get('reset');
+  if (resetToken) {
+    openResetPasswordForm(resetToken);
+    clearUrlParams(['reset']);
+  }
+}
+
+function clearUrlParams(keys) {
+  try {
+    const u = new URL(window.location.href);
+    for (const k of keys) u.searchParams.delete(k);
+    window.history.replaceState({}, '', u.toString());
+  } catch (_) {}
+}
+
+// 비밀번호 재설정 폼 (모달 안에 표시)
+function openResetPasswordForm(token) {
+  openAuthModal('register');
+  authMode = 'login';
+  const form = document.getElementById('authForm');
+  if (!form) return;
+
+  // 기존 폼을 재설정 폼으로 교체
+  form.innerHTML =
+    '<div style="font-size:12px;margin-bottom:10px;">새 비밀번호를 입력하세요.</div>' +
+    '<label style="display:block;margin-bottom:10px;font-size:12px;">새 비밀번호' +
+    '<input id="resetNewPw" type="password" autocomplete="new-password" ' +
+    'style="width:100%;margin-top:4px;padding:8px;background:var(--ink);color:inherit;border:1px solid var(--line);border-radius:3px;">' +
+    '<span style="display:block;color:#8b90b8;font-size:11px;margin-top:4px;">10자 이상, 영문 대소문자·숫자 중 2종 이상</span>' +
+    '</label>' +
+    '<label style="display:block;margin-bottom:10px;font-size:12px;">새 비밀번호 확인' +
+    '<input id="resetConfirmPw" type="password" autocomplete="new-password" ' +
+    'style="width:100%;margin-top:4px;padding:8px;background:var(--ink);color:inherit;border:1px solid var(--line);border-radius:3px;">' +
+    '</label>' +
+    '<div id="authError" style="display:none;color:#d9524a;font-size:12px;margin-bottom:10px;" role="alert"></div>' +
+    '<button type="submit" class="btn" style="width:100%;">비밀번호 재설정</button>';
+
+  // 폼이 교체되었으므로 핸들러를 다시 연결
+  const handler = async (e) => {
+    e.preventDefault();
+    const pw = document.getElementById('resetNewPw').value;
+    const confirmPw = document.getElementById('resetConfirmPw').value;
+    if (pw !== confirmPw) {
+      showAuthError('비밀번호가 일치하지 않습니다.');
+      return;
+    }
+    try {
+      const res = await fetch(apiUrl('/api/auth/reset-password'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, newPassword: pw }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showAuthError(data.error || '재설정에 실패했습니다.');
+        return;
+      }
+      closeAuthModal();
+      msg('ok', data.message || '비밀번호가 재설정되었습니다.');
+      openAuthModal('login');
+      setTimeout(() => restoreAuthForm(), 100);
+    } catch (err) {
+      showAuthError('서버에 연결할 수 없습니다.');
+    }
+  };
+
+  form.addEventListener('submit', handler);
+  form.dataset.resetHandler = '1';
+  setTimeout(() => document.getElementById('resetNewPw')?.focus(), 40);
+}
+
+// 재설정 폼 사용 후 기본 로그인 폼 복구
+function restoreAuthForm() {
+  const form = document.getElementById('authForm');
+  if (!form || form.dataset.resetHandler !== '1') return;
+  delete form.dataset.resetHandler;
+  location.reload();
+}
 
 // ESC 로 모달 닫기
 document.addEventListener('keydown', (e) => {
@@ -2579,12 +2944,22 @@ async function sendInvite() {
       msg('bad', data.error || '초대에 실패했습니다.');
       return;
     }
+    // 메일이 실제로 발송되었는지 서버 응답으로 확인할 수 있다
+    const delivery = data.delivery;
     const link = data.invite && (data.invite.inviteUrl || data.invite.invitePath);
-    if (link) {
-      // 사용자가 바로 복사해 전달할 수 있게 안내한다 (메일 발송은 서버 연동 필요)
-      window.prompt('초대 링크를 복사해 전달하세요 (7일 유효):', window.location.origin + link);
+    const fullLink = link ? (link.startsWith('http') ? link : window.location.origin + link) : '';
+
+    if (delivery && delivery.ok === false) {
+      msg('warn', '초대는 생성되었지만 메일 발송에 실패했습니다. 아래 링크를 직접 전달하세요.');
+      if (fullLink) window.prompt('초대 링크를 직접 전달하세요 (7일 유효):', fullLink);
+    } else if (delivery && delivery.mode === 'dev-outbox') {
+      msg('ok', '초대가 생성되었습니다 (개발 모드: 메일이 outbox에 기록됨).');
+      if (fullLink) window.prompt('개발 모드입니다. 테스트하려면 아래 링크를 사용하세요:', fullLink);
+    } else if (fullLink) {
+      msg('ok', '초대 메일을 발송했습니다. recipient의 메일함을 확인하세요.');
+    } else {
+      msg('ok', '초대가 생성되었습니다.');
     }
-    msg('ok', '초대가 생성되었습니다.');
     document.getElementById('inviteEmail').value = '';
   } catch (e) {
     msg('bad', '서버에 연결할 수 없습니다.');
@@ -2950,14 +3325,29 @@ function showLoginPrompt(mode = 'login') {
 }
 
 // 실제 인증 API 호출
-async function login(userId, password) {
+async function login(userId, password, totpCode) {
   try {
     const response = await fetch(apiUrl('/api/auth/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, password }),
+      body: JSON.stringify({ userId, password, totpCode: totpCode || undefined }),
     });
     const data = await response.json().catch(() => ({}));
+
+    // 2FA가 필요한 계정: 코드 입력 UI를 열고 사용자를 다시 입력하게 한다
+    if (data.totpRequired) {
+      authTotpRequired = true;
+      openAuthModal('login');
+      applyAuthMode();
+      const userIdField = document.getElementById('authUserId');
+      if (userIdField) userIdField.value = userId;
+      const pwField = document.getElementById('authPassword');
+      if (pwField) pwField.value = password;
+      setTimeout(() => document.getElementById('authTotp')?.focus(), 60);
+      showAuthError(data.error || '2단계 인증 코드를 입력하세요.');
+      msg('warn', '2단계 인증이 필요합니다.');
+      return { ok: false, needTotp: true, error: data.error };
+    }
 
     if (response.ok && data.token) {
       applySession(data);
@@ -3030,6 +3420,7 @@ function applySession(data) {
     socketIO.emit('auth', { token: data.token, roomId: currentRoomId() });
   }
   updateAuthUI(true, currentUser);
+  refresh2FAStatus();
 
   // 로그인 직후 초대 링크가 열려 있으면 자동으로 수락한다
   setTimeout(() => {
@@ -3268,6 +3659,7 @@ async function tryAutoLogin() {
       updateAuthUI(true, currentUser);
       checkCalendarConnection();
       handleInviteFromUrl();
+      handleUrlTokens();
     } else {
       // 세션 만료/폐기됨 → 저장소 정리하고 로그인 유도
       clearStoredSession();

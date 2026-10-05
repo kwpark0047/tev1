@@ -9,6 +9,8 @@ const { Pool } = require('pg');
 const Redis = require('ioredis');
 const { createAdapter } = require('@socket.io/redis-adapter');
 const { Server } = require('socket.io');
+const mailer = require('./mailer');
+const totp = require('./totp');
 const {
   hashPassword,
   verifyPassword,
@@ -259,6 +261,13 @@ async function setupDatabase() {
         ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(320);
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ;
+        -- 2FA (TOTP)
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret VARCHAR(64);
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled BOOLEAN DEFAULT false;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_confirmed_at TIMESTAMPTZ;
+        -- 복구 코드는 해시로만 보관(평문 노출 방지)
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS recovery_codes TEXT[] DEFAULT '{}';
 
         -- 세션 관리 (로그아웃/강제 만료 지원)
         CREATE TABLE IF NOT EXISTS auth_sessions (
@@ -283,6 +292,20 @@ async function setupDatabase() {
           created_at TIMESTAMPTZ DEFAULT NOW()
         );
         CREATE INDEX IF NOT EXISTS idx_login_attempts_user_time ON login_attempts(user_id, created_at DESC);
+
+        -- 이메일 인증(가입 확인) / 비밀번호 재설정 토큰
+        CREATE TABLE IF NOT EXISTS auth_tokens (
+          id SERIAL PRIMARY KEY,
+          token_hash VARCHAR(64) NOT NULL UNIQUE,
+          user_id VARCHAR(255) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          purpose VARCHAR(32) NOT NULL, -- verify_email | password_reset | email_change
+          target_email VARCHAR(320),
+          expires_at TIMESTAMPTZ NOT NULL,
+          used_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_tokens_user_purpose ON auth_tokens(user_id, purpose);
+        CREATE INDEX IF NOT EXISTS idx_auth_tokens_expires ON auth_tokens(expires_at);
         CREATE TABLE IF NOT EXISTS rooms (
           id VARCHAR(255) PRIMARY KEY,
           name VARCHAR(255) NOT NULL,
@@ -447,9 +470,10 @@ async function migrateTimestampsToTimestamptz(client) {
     organization_invites: ['expires_at', 'accepted_at', 'created_at'],
     audit_logs: ['created_at'],
     push_subscriptions: ['created_at'],
-    users: ['created_at', 'last_login_at', 'locked_until'],
+    users: ['created_at', 'last_login_at', 'locked_until', 'email_verified_at', 'totp_confirmed_at'],
     auth_sessions: ['created_at', 'expires_at', 'revoked_at'],
     login_attempts: ['created_at'],
+    auth_tokens: ['expires_at', 'used_at', 'created_at'],
   };
 
   for (const [table, cols] of Object.entries(targets)) {
@@ -570,6 +594,72 @@ function getRandomColor() {
   return colors[Math.floor(Math.random() * colors.length)];
 }
 
+// ===================== 인증 토큰(가입확인/비밀번호재설정) =====================
+// 토큰은 평문으로 저장하지 않고 SHA-256 해시만 DB에 남긴다.
+// DB 유출 시에도 즉시 사용할 수 없는 값을 보관하기 위한 조치다.
+const TOKEN_TTL = {
+  verify_email: 24 * 60 * 60 * 1000,      // 24시간
+  password_reset: 60 * 60 * 1000,          // 1시간
+};
+
+function hashToken(raw) {
+  return crypto.createHash('sha256').update(raw).digest('hex');
+}
+
+/** 이메일 정규화: 공백 제거 + 소문자. 형식이 잘못되면 빈 문자열 반환 */
+function normalizeEmail(email) {
+  if (email === undefined || email === null || email === '') return '';
+  if (typeof email !== 'string') return '';
+  const trimmed = email.trim().toLowerCase();
+  if (trimmed.length > 320) return '';
+  // 의도적으로 단순한 검사만 한다. 진짜 검증은 발송 후 확인 링크로 한다.
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) return '';
+  return trimmed;
+}
+
+function randomToken() {
+  return crypto.randomBytes(32).toString('base64url');
+}
+
+/** 인증 토큰 발급(평문은 반환, DB에는 해시 저장) */
+async function issueAuthToken(userId, purpose, targetEmail = null) {
+  const raw = randomToken();
+  const ttl = TOKEN_TTL[purpose] || TOKEN_TTL.verify_email;
+  await pool.query(
+    `INSERT INTO auth_tokens (token_hash, user_id, purpose, target_email, expires_at)
+     VALUES ($1, $2, $3, $4, NOW() + ($5::bigint || ' milliseconds')::interval)`,
+    [hashToken(raw), userId, purpose, targetEmail, String(ttl)]
+  );
+  return { token: raw, expiresAt: new Date(Date.now() + ttl) };
+}
+
+/** 인증 토큰 소비(1회 사용, 만료/재사용 불가) */
+async function consumeAuthToken(raw, purpose) {
+  if (!raw || typeof raw !== 'string') return null;
+  const result = await pool.query(
+    `UPDATE auth_tokens
+     SET used_at = NOW()
+     WHERE token_hash = $1 AND purpose = $2
+       AND used_at IS NULL AND expires_at > NOW()
+     RETURNING user_id, target_email, purpose`,
+    [hashToken(raw), purpose]
+  );
+  return result.rows[0] || null;
+}
+
+/** 기존 미사용 토큰 폐기 (새로 발급할 때) */
+async function revokeAuthTokens(userId, purpose) {
+  await pool.query(
+    'UPDATE auth_tokens SET used_at = NOW() WHERE user_id = $1 AND purpose = $2 AND used_at IS NULL',
+    [userId, purpose]
+  );
+}
+
+/** 프론트엔드 베이스 URL */
+function frontendBase() {
+  return (process.env.FRONTEND_URL || 'http://localhost:8082').replace(/\/+$/, '');
+}
+
 // 세션 수명 (기본 12시간)
 const SESSION_TTL_HOURS = Number(process.env.SESSION_TTL_HOURS || 12);
 
@@ -676,6 +766,13 @@ setInterval(() => {
     else rateBuckets.set(k, alive);
   }
 }, 10 * 60 * 1000).unref();
+
+// 이메일 발송이 포함된 엔드포인트는 메일 남용을 막기 위해 더 엄격하게 제한한다.
+const emailRateLimit = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  message: '요청이 너무 많습니다. 1시간 후 다시 시도하세요.',
+});
 
 // 인증 관련 엔드포인트는 IP 기준으로 더 엄격하게 제한한다.
 const loginRateLimit = rateLimit({
@@ -1036,6 +1133,11 @@ app.post('/api/auth/register', loginRateLimit, async (req, res) => {
     return res.status(400).json({ error: '이름을 1~80자로 입력하세요.', code: 'INVALID_NAME' });
   }
 
+  const normalizedEmail = normalizeEmail(email);
+  if (email && !normalizedEmail) {
+    return res.status(400).json({ error: '이메일 형식이 올바르지 않습니다.', code: 'INVALID_EMAIL' });
+  }
+
   // 입력 검증을 통과한 뒤 DB 필요 (정책 검증은 DB 없이도 동작해야 함)
   if (!dbAvailable) {
     return res.status(503).json({ error: '데이터베이스를 사용할 수 없습니다.', code: 'DB_UNAVAILABLE' });
@@ -1045,6 +1147,15 @@ app.post('/api/auth/register', loginRateLimit, async (req, res) => {
     const existing = await pool.query('SELECT id FROM users WHERE id = $1', [idCheck.value]);
     if (existing.rows.length > 0) {
       return res.status(409).json({ error: '이미 사용 중인 사용자 ID입니다.', code: 'USER_EXISTS' });
+    }
+    if (normalizedEmail) {
+      const emailTaken = await pool.query(
+        'SELECT id FROM users WHERE lower(email) = lower($1)',
+        [normalizedEmail]
+      );
+      if (emailTaken.rows.length > 0) {
+        return res.status(409).json({ error: '이미 등록된 이메일입니다.', code: 'EMAIL_EXISTS' });
+      }
     }
 
     const passwordHash = await hashPassword(password);
@@ -1057,7 +1168,29 @@ app.post('/api/auth/register', loginRateLimit, async (req, res) => {
 
     await recordLoginAttempt(idCheck.value, req, true, 'register');
     const token = await issueSession({ userId: idCheck.value, name: name.trim() }, req);
-    res.status(201).json({ token, userId: idCheck.value, name: name.trim() });
+
+    // 이메일을 제공했다면 인증 메일을 발송한다 (실패해도 가입은 성공으로 유지)
+    let verification = null;
+    if (normalizedEmail) {
+      try {
+        const issued = await issueAuthToken(idCheck.value, 'verify_email', normalizedEmail);
+        const link = `${frontendBase()}/?verify=${issued.token}`;
+        const mail = mailer.verificationEmail({ link, name: name.trim() });
+        const sent = await mailer.send({ to: normalizedEmail, ...mail });
+        verification = { sent: sent.ok, mode: sent.mode, expiresAt: issued.expiresAt };
+      } catch (e) {
+        console.error('verification mail error:', e.message);
+      }
+    }
+
+    res.status(201).json({
+      token,
+      userId: idCheck.value,
+      name: name.trim(),
+      email: normalizedEmail || null,
+      emailVerificationRequired: Boolean(normalizedEmail),
+      verification,
+    });
   } catch (e) {
     console.error('Register error:', e);
     res.status(500).json({ error: '가입 처리 중 오류가 발생했습니다.' });
@@ -1080,7 +1213,9 @@ app.post('/api/auth/login', loginRateLimit, async (req, res) => {
 
   try {
     const result = await pool.query(
-      'SELECT id, name, color, password_hash, is_active, locked_until, failed_logins FROM users WHERE id = $1',
+      `SELECT id, name, color, email, password_hash, is_active, locked_until, failed_logins,
+              totp_secret, totp_enabled, recovery_codes
+       FROM users WHERE id = $1`,
       [idCheck.value]
     );
 
@@ -1128,6 +1263,61 @@ app.post('/api/auth/login', loginRateLimit, async (req, res) => {
       return res.status(403).json({ error: '비활성화된 계정입니다. 관리자에게 문의하세요.', code: 'ACCOUNT_DISABLED' });
     }
 
+    // 2FA 활성화 계정은 코드 없으면 첫 단계만 통과시킨다
+    if (user.totp_enabled && user.totp_secret) {
+      const code = String((req.body && req.body.totpCode) || '').trim();
+      if (!code) {
+        await recordLoginAttempt(user.id, req, false, 'need_2fa');
+        return res.status(401).json({
+          error: '2단계 인증 코드를 입력하세요.',
+          code: 'TOTP_REQUIRED',
+          totpRequired: true,
+        });
+      }
+
+      const viaTotp = totp.verifyCode(user.totp_secret, code);
+      let viaRecovery = false;
+
+      if (!viaTotp && user.recovery_codes && user.recovery_codes.length > 0) {
+        // 복구 코드는 평문 저장을 피하기 위해 해시로 비교한다
+        const normalized = totp.normalizeRecoveryCode(code);
+        const hashed = hashRecoveryCode(normalized);
+        const match = user.recovery_codes.find((rc) => rc === hashed);
+        if (match) {
+          viaRecovery = true;
+          // 사용한 복구 코드는 제거(1회 사용)
+          await pool.query(
+            `UPDATE users SET recovery_codes = array_remove(recovery_codes, $1) WHERE id = $2`,
+            [match, user.id]
+          );
+          const left = user.recovery_codes.length - 1;
+          await recordLoginAttempt(user.id, req, true, 'login_recovery');
+          await pool.query(
+            `UPDATE users SET failed_logins = 0, locked_until = NULL, last_login_at = NOW(), status = $1 WHERE id = $2`,
+            ['online', user.id]
+          );
+          const token = await issueSession({ userId: user.id, name: user.name }, req);
+          return res.json({
+            token,
+            userId: user.id,
+            name: user.name,
+            color: user.color,
+            usedRecoveryCode: true,
+            recoveryCodesLeft: left,
+          });
+        }
+      }
+
+      if (!viaTotp && !viaRecovery) {
+        await recordLoginAttempt(user.id, req, false, 'bad_2fa');
+        return res.status(401).json({
+          error: '2단계 인증 코드가 올바르지 않습니다.',
+          code: 'TOTP_INVALID',
+          totpRequired: true,
+        });
+      }
+    }
+
     // 성공: 실패 카운트 초기화 + 세션 발급
     await pool.query(
       'UPDATE users SET failed_logins = 0, locked_until = NULL, last_login_at = NOW(), status = $1 WHERE id = $2',
@@ -1136,7 +1326,14 @@ app.post('/api/auth/login', loginRateLimit, async (req, res) => {
     await recordLoginAttempt(user.id, req, true, 'login');
 
     const token = await issueSession({ userId: user.id, name: user.name }, req);
-    res.json({ token, userId: user.id, name: user.name, color: user.color });
+    res.json({
+      token,
+      userId: user.id,
+      name: user.name,
+      color: user.color,
+      email: user.email || null,
+      twoFactorEnabled: Boolean(user.totp_enabled),
+    });
   } catch (e) {
     console.error('Login error:', e);
     res.status(500).json({ error: '로그인 처리 중 오류가 발생했습니다.' });
@@ -1161,6 +1358,349 @@ app.post('/api/auth/logout', requireAuth, requireDb, async (req, res) => {
   } catch (e) {
     console.error('Logout error:', e);
     res.status(500).json({ error: '로그아웃 처리 중 오류가 발생했습니다.' });
+  }
+});
+
+// 이메일 확인 (토큰 1회 사용)
+app.post('/api/auth/verify-email', emailRateLimit, async (req, res) => {
+  const { token } = req.body || {};
+  if (!token) return res.status(400).json({ error: '인증 토큰이 필요합니다.', code: 'TOKEN_REQUIRED' });
+
+  if (!dbAvailable) {
+    return res.status(503).json({ error: '데이터베이스를 사용할 수 없습니다.', code: 'DB_UNAVAILABLE' });
+  }
+
+  try {
+    const used = await consumeAuthToken(token, 'verify_email');
+    if (!used) {
+      return res.status(400).json({
+        error: '유효하지 않거나 이미 사용/만료된 링크입니다.',
+        code: 'INVALID_TOKEN',
+      });
+    }
+
+    await pool.query(
+      'UPDATE users SET email_verified_at = NOW() WHERE id = $1',
+      [used.user_id]
+    );
+
+    await pool.query(
+      `INSERT INTO audit_logs (user_id, action, resource_type, resource_id)
+       VALUES ($1, 'verify_email', 'user', $1)`,
+      [used.user_id]
+    );
+
+    const user = await pool.query('SELECT id, name FROM users WHERE id = $1', [used.user_id]);
+    res.json({
+      success: true,
+      userId: used.user_id,
+      name: user.rows[0] && user.rows[0].name,
+    });
+  } catch (e) {
+    console.error('verify-email error:', e);
+    res.status(500).json({ error: '이메일 인증 처리에 실패했습니다.' });
+  }
+});
+
+// 인증 메일 재전송
+app.post('/api/auth/resend-verification', loginRateLimit, async (req, res) => {
+  const { email } = req.body || {};
+  const normalized = normalizeEmail(email);
+  if (!normalized) {
+    return res.status(400).json({ error: '이메일 형식이 올바르지 않습니다.', code: 'INVALID_EMAIL' });
+  }
+  if (!dbAvailable) {
+    return res.status(503).json({ error: '데이터베이스를 사용할 수 없습니다.', code: 'DB_UNAVAILABLE' });
+  }
+
+  try {
+    const found = await pool.query(
+      'SELECT id, name, email_verified_at FROM users WHERE lower(email) = lower($1)',
+      [normalized]
+    );
+    const user = found.rows[0];
+
+    // 계정 존재 여부를 노출하지 않기 위해 항상 같은 응답을 준다
+    const generic = { success: true, message: '인증 메일을 보냈습니다. 메일함을 확인하세요.' };
+
+    if (!user || user.email_verified_at) {
+      return res.json(generic);
+    }
+
+    await revokeAuthTokens(user.id, 'verify_email');
+    const issued = await issueAuthToken(user.id, 'verify_email', normalized);
+    const link = `${frontendBase()}/?verify=${issued.token}`;
+    const mail = mailer.verificationEmail({ link, name: user.name });
+    const sent = await mailer.send({ to: normalized, ...mail });
+
+    res.json({ ...generic, delivery: { ok: sent.ok, mode: sent.mode } });
+  } catch (e) {
+    console.error('resend-verification error:', e);
+    res.status(500).json({ error: '인증 메일 발송에 실패했습니다.' });
+  }
+});
+
+// 비밀번호 재설정 요청 (링크를 메일로 발송)
+app.post('/api/auth/forgot-password', emailRateLimit, async (req, res) => {
+  const { email } = req.body || {};
+  const normalized = normalizeEmail(email);
+  if (!normalized) {
+    return res.status(400).json({ error: '이메일 형식이 올바르지 않습니다.', code: 'INVALID_EMAIL' });
+  }
+  if (!dbAvailable) {
+    return res.status(503).json({ error: '데이터베이스를 사용할 수 없습니다.', code: 'DB_UNAVAILABLE' });
+  }
+
+  // 항상 동일한 응답 (계정 존재 여부 노출 방지)
+  const generic = { success: true, message: '요청이 접수되었습니다. 등록된 이메일이라면 링크를 보냈습니다.' };
+
+  try {
+    const found = await pool.query(
+      'SELECT id, name, email FROM users WHERE lower(email) = lower($1)',
+      [normalized]
+    );
+    const user = found.rows[0];
+    if (!user) return res.json(generic);
+
+    await revokeAuthTokens(user.id, 'password_reset');
+    const issued = await issueAuthToken(user.id, 'password_reset', user.email);
+    const link = `${frontendBase()}/?reset=${issued.token}`;
+    const mail = mailer.passwordResetEmail({ link, name: user.name });
+    const sent = await mailer.send({ to: user.email, ...mail });
+
+    res.json({ ...generic, delivery: { ok: sent.ok, mode: sent.mode } });
+  } catch (e) {
+    console.error('forgot-password error:', e);
+    // 발송 실패도 동일한 응답으로 감춘다
+    res.json(generic);
+  }
+});
+
+// 비밀번호 재설정 실행 (토큰 + 새 비밀번호)
+app.post('/api/auth/reset-password', emailRateLimit, async (req, res) => {
+  const { token, newPassword } = req.body || {};
+  if (!token) return res.status(400).json({ error: '재설정 토큰이 필요합니다.', code: 'TOKEN_REQUIRED' });
+
+  const pwCheck = validatePassword(newPassword);
+  if (!pwCheck.ok) return res.status(400).json({ error: pwCheck.error, code: 'WEAK_PASSWORD' });
+
+  if (!dbAvailable) {
+    return res.status(503).json({ error: '데이터베이스를 사용할 수 없습니다.', code: 'DB_UNAVAILABLE' });
+  }
+
+  try {
+    const used = await consumeAuthToken(token, 'password_reset');
+    if (!used) {
+      return res.status(400).json({
+        error: '유효하지 않거나 이미 사용/만료된 링크입니다.',
+        code: 'INVALID_TOKEN',
+      });
+    }
+
+    const newHash = await hashPassword(newPassword);
+    await pool.query(
+      'UPDATE users SET password_hash = $1, failed_logins = 0, locked_until = NULL WHERE id = $2',
+      [newHash, used.user_id]
+    );
+
+    // 비밀번호가 바뀌었으니 기존 세션을 모두 폐기한다
+    await pool.query(
+      'UPDATE auth_sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL',
+      [used.user_id]
+    );
+
+    await pool.query(
+      `INSERT INTO audit_logs (user_id, action, resource_type, resource_id)
+       VALUES ($1, 'password_reset', 'user', $1)`,
+      [used.user_id]
+    );
+
+    res.json({ success: true, message: '비밀번호가 재설정되었습니다. 새 비밀번호로 로그인하세요.' });
+  } catch (e) {
+    console.error('reset-password error:', e);
+    res.status(500).json({ error: '비밀번호 재설정에 실패했습니다.' });
+  }
+});
+
+// ===================== 2FA (TOTP) =====================
+
+/** 복구 코드 해시 (평문 저장 금지) */
+function hashRecoveryCode(normalized) {
+  return crypto.createHash('sha256').update(`recovery:${normalized}`).digest('hex');
+}
+
+/** 2FA 상태 조회 */
+app.get('/api/auth/2fa/status', requireAuth, requireDb, async (req, res) => {
+  try {
+    const r = await pool.query(
+      'SELECT totp_enabled, totp_confirmed_at, recovery_codes FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    const user = r.rows[0];
+    if (!user) return res.status(404).json({ error: '사용자를 찾을 수 없습니다.', code: 'USER_NOT_FOUND' });
+    res.json({
+      enabled: Boolean(user.totp_enabled) && Boolean(user.totp_confirmed_at),
+      confirmedAt: user.totp_confirmed_at,
+      recoveryCodesLeft: (user.recovery_codes || []).length,
+    });
+  } catch (e) {
+    console.error('2fa status error:', e);
+    res.status(500).json({ error: '2FA 상태를 조회하지 못했습니다.' });
+  }
+});
+
+/**
+ * 2FA 활성화 시작
+ * 시크릿을 발급하고 otpauth URI를 돌려준다. 아직 totp_enabled는 false이므로
+ * 코드를 확인하기 전까지는 로그인에 영향이 없다.
+ */
+app.post('/api/auth/2fa/setup', requireAuth, requireDb, async (req, res) => {
+  try {
+    const current = await pool.query(
+      'SELECT totp_enabled FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    if (!current.rows.length) {
+      return res.status(404).json({ error: '사용자를 찾을 수 없습니다.', code: 'USER_NOT_FOUND' });
+    }
+    if (current.rows[0].totp_enabled) {
+      return res.status(409).json({ error: '이미 2단계 인증이 켜져 있습니다.', code: 'ALREADY_ENABLED' });
+    }
+
+    const secret = totp.generateSecret();
+    const uri = totp.otpauthUri({
+      secret,
+      account: req.user.name || req.user.id,
+      issuer: 'TEV1',
+    });
+
+    // 아직 활성화하지 않은 상태로만 보관
+    await pool.query(
+      'UPDATE users SET totp_secret = $1, totp_enabled = false WHERE id = $2',
+      [secret, req.user.id]
+    );
+
+    await pool.query(
+      `INSERT INTO audit_logs (user_id, action, resource_type, resource_id)
+       VALUES ($1, '2fa_setup_start', 'user', $1)`,
+      [req.user.id]
+    );
+
+    res.json({ secret, otpauthUri: uri, digits: totp.DIGITS, period: totp.PERIOD });
+  } catch (e) {
+    console.error('2fa setup error:', e);
+    res.status(500).json({ error: '2FA 설정을 시작하지 못했습니다.' });
+  }
+});
+
+/** 2FA 활성화 확정: 코드 1회 확인 후 실제 활성화 + 복구 코드 발급 */
+app.post('/api/auth/2fa/confirm', requireAuth, requireDb, async (req, res) => {
+  const code = String((req.body && req.body.code) || '').trim();
+  if (!code) return res.status(400).json({ error: '인증 코드를 입력하세요.', code: 'CODE_REQUIRED' });
+
+  try {
+    const r = await pool.query(
+      'SELECT totp_secret, totp_enabled FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    const user = r.rows[0];
+    if (!user || !user.totp_secret) {
+      return res.status(409).json({ error: '먼저 2FA 설정을 시작하세요.', code: 'SETUP_REQUIRED' });
+    }
+    if (user.totp_enabled) {
+      return res.status(409).json({ error: '이미 활성화되어 있습니다.', code: 'ALREADY_ENABLED' });
+    }
+    if (!totp.verifyCode(user.totp_secret, code)) {
+      return res.status(400).json({ error: '인증 코드가 올바르지 않습니다.', code: 'TOTP_INVALID' });
+    }
+
+    const recoveryCodes = totp.generateRecoveryCodes();
+    const hashed = recoveryCodes.map((c) => hashRecoveryCode(totp.normalizeRecoveryCode(c)));
+
+    await pool.query(
+      `UPDATE users SET totp_enabled = true, totp_confirmed_at = NOW(), recovery_codes = $1 WHERE id = $2`,
+      [hashed, req.user.id]
+    );
+
+    await pool.query(
+      `INSERT INTO audit_logs (user_id, action, resource_type, resource_id)
+       VALUES ($1, '2fa_enable', 'user', $1)`,
+      [req.user.id]
+    );
+
+    // 복구 코드는 이 응답으로만 평문이 전달된다
+    res.json({ success: true, recoveryCodes, recoveryCodesLeft: recoveryCodes.length });
+  } catch (e) {
+    console.error('2fa confirm error:', e);
+    res.status(500).json({ error: '2FA를 활성화하지 못했습니다.' });
+  }
+});
+
+/** 2FA 해제: 현재 비밀번호 + 현재 코드 필요 */
+app.post('/api/auth/2fa/disable', requireAuth, requireDb, async (req, res) => {
+  const { password, code } = req.body || {};
+  try {
+    const r = await pool.query(
+      'SELECT password_hash, totp_secret, totp_enabled FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    const user = r.rows[0];
+    if (!user) return res.status(404).json({ error: '사용자를 찾을 수 없습니다.', code: 'USER_NOT_FOUND' });
+    if (!user.totp_enabled) {
+      return res.status(409).json({ error: '2단계 인증이 켜져 있지 않습니다.', code: 'NOT_ENABLED' });
+    }
+
+    const pwOk = await verifyPassword(password || '', user.password_hash || '');
+    if (!pwOk) {
+      return res.status(401).json({ error: '비밀번호가 올바르지 않습니다.', code: 'INVALID_CREDENTIALS' });
+    }
+    const codeOk = totp.verifyCode(user.totp_secret, code || '');
+    if (!codeOk) {
+      return res.status(400).json({ error: '인증 코드가 올바르지 않습니다.', code: 'TOTP_INVALID' });
+    }
+
+    await pool.query(
+      `UPDATE users SET totp_enabled = false, totp_secret = NULL, totp_confirmed_at = NULL,
+                        recovery_codes = '{}' WHERE id = $1`,
+      [req.user.id]
+    );
+
+    await pool.query(
+      `INSERT INTO audit_logs (user_id, action, resource_type, resource_id)
+       VALUES ($1, '2fa_disable', 'user', $1)`,
+      [req.user.id]
+    );
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error('2fa disable error:', e);
+    res.status(500).json({ error: '2FA를 해제하지 못했습니다.' });
+  }
+});
+
+/** 복구 코드 재생성 (기존 코드 폐기) */
+app.post('/api/auth/2fa/recovery-codes', requireAuth, requireDb, async (req, res) => {
+  try {
+    const r = await pool.query(
+      'SELECT totp_secret, totp_enabled FROM users WHERE id = $1',
+      [req.user.id]
+    );
+    const user = r.rows[0];
+    if (!user || !user.totp_enabled) {
+      return res.status(409).json({ error: '2단계 인증이 켜져 있지 않습니다.', code: 'NOT_ENABLED' });
+    }
+    if (!totp.verifyCode(user.totp_secret, String((req.body && req.body.code) || '').trim())) {
+      return res.status(400).json({ error: '인증 코드가 올바르지 않습니다.', code: 'TOTP_INVALID' });
+    }
+
+    const codes = totp.generateRecoveryCodes();
+    const hashed = codes.map((c) => hashRecoveryCode(totp.normalizeRecoveryCode(c)));
+    await pool.query('UPDATE users SET recovery_codes = $1 WHERE id = $2', [hashed, req.user.id]);
+
+    res.json({ recoveryCodes: codes, recoveryCodesLeft: codes.length });
+  } catch (e) {
+    console.error('2fa recovery codes error:', e);
+    res.status(500).json({ error: '복구 코드를 생성하지 못했습니다.' });
   }
 });
 
@@ -1770,7 +2310,29 @@ app.post('/api/organizations/:orgId/invites', requireAuth, requireDb, async (req
       [orgId, userId, orgId, JSON.stringify({ email, role: inviteRole })]
     );
 
-    const base = process.env.FRONTEND_URL || '';
+    const base = frontendBase();
+    const inviteUrl = base + '/?invite=' + token;
+
+    // 조직 이름을 메일 본문에 넣으므로 조회한다
+    const orgRow = await pool.query('SELECT name FROM organizations WHERE id = $1', [orgId]);
+    const orgName = orgRow.rows[0] ? orgRow.rows[0].name : 'TEV1 조직';
+
+    // 메일 발송은 초대 생성 성공을 막지 않는다(실패해도 링크로 공유 가능)
+    let delivery = null;
+    try {
+      const mail = mailer.orgInviteEmail({
+        link: inviteUrl,
+        orgName,
+        role: inviteRole,
+        inviterName: req.user.name,
+      });
+      const sent = await mailer.send({ to: email.trim(), ...mail });
+      delivery = { ok: sent.ok, mode: sent.mode, error: sent.error };
+    } catch (e) {
+      console.error('invite mail error:', e.message);
+      delivery = { ok: false, mode: 'error', error: e.message };
+    }
+
     res.json({
       invite: {
         email,
@@ -1778,8 +2340,10 @@ app.post('/api/organizations/:orgId/invites', requireAuth, requireDb, async (req
         token,
         expiresAt,
         invitePath: '/?invite=' + token,
-        inviteUrl: base ? base + '/?invite=' + token : '',
+        inviteUrl,
       },
+      delivery,
+      mailerMode: mailer.mode(),
     });
   } catch (e) {
     console.error('Create invite error:', e);

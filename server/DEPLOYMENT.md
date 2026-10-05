@@ -137,7 +137,15 @@ curl https://tev1.example.com/health/detailed
 | GOOGLE_REDIRECT_URI | X | OAuth 리다이렉트 URI | `https://tev1.example.com/api/auth/google/callback` |
 | VAPID_PUBLIC_KEY | X | Web Push VAPID 공개 키 | `BEl62iUYgUivxIkv69yViEuiBIa40HI80NM9fY7s5eDg8qVhKsLGhQ9k5z` |
 | VAPID_PRIVATE_KEY | X | Web Push VAPID 개인 키 | `your-private-key` |
-| FRONTEND_URL | O | 프론트엔드 URL | `https://tev1.example.com` |
+| SMTP_HOST | X | SMTP 서버 (미설정 시 dev-outbox) | `smtp.example.com` |
+| SMTP_PORT | X | SMTP 포트 (TLS는 465) | `587` |
+| SMTP_SECURE | X | STARTTLS 대신 직접 TLS 사용 여부 | `false` |
+| SMTP_USER | X | SMTP 계정 | `tev1@example.com` |
+| SMTP_PASS | X | SMTP 비밀번호 | - |
+| MAIL_FROM | X | 발신자 표시 주소 | `tev1@example.com` |
+| MAIL_OUTBOX_FILE | - | dev-outbox 저장 경로(개발 전용) | `/tmp/tev1-outbox.jsonl` |
+| METRICS_TOKEN | - | `/metrics` 접근 시 요구할 베어러 토큰 | `random-token` |
+| FRONTEND_URL | O | 프론트엔드 URL (메일 링크 생성에 사용) | `https://tev1.example.com` |
 | CORS_ORIGIN | O | CORS 허용 오리진 | `https://tev1.example.com` |
 | NODE_ENV | O | 실행 환경 | `production` |
 | PORT | O | 서버 포트 | `8081` |
@@ -317,6 +325,28 @@ cd server
 npm test                        # 프론트 9항목 + 서버 33항목
 TEV1_SKIP_DB=1 npm run test:smoke   # DB 없이 degradation 경로 17항목
 ```
+
+## 메일 발송 (SMTP) 설정
+
+이메일 인증·비밀번호 재설정·초대 메일은 SMTP 설정이 없으면 개발용 `dev-outbox` 모드로
+동작한다. 운영에서는 반드시 아래 변수를 설정한다.
+
+```bash
+MAIL_FROM="tev1@example.com"
+SMTP_HOST="smtp.example.com"
+SMTP_PORT="587"
+SMTP_SECURE="false"     # 465 포트를 쓰면 true
+SMTP_USER="tev1@example.com"
+SMTP_PASS="app-password"
+FRONTEND_URL="https://tev1.example.com"
+```
+
+주의 사항:
+
+- `dev-outbox`은 발송 성공으로 간주되지만 실제 메일이 도착하지 않는다.
+  메일 발송을 확인해야 하는 QA는 반드시 SMTP를 설정한 환경에서 수행한다.
+- outbox JSONL에는 인증·재설정 토큰이 평문으로 남는다. 운영에서는 이 모드를 쓰지 않는다.
+- `FRONTEND_URL`이 실제 도메인과 다르면 인증/재설정 링크가 엉뚱한 주소로 발급된다.
 
 ## Web Push VAPID 키 생성
 

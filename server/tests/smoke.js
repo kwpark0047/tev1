@@ -554,6 +554,151 @@ async function runDbSuite(token) {
       stored ? stored.slice(0, 12) + '...' : 'none'
     );
 
+    // ===================== 이메일 인증 / 2FA / 초대 메일 =====================
+    const mailer = require('../src/mailer');
+    const totpLib = require('../src/totp');
+    const mailTo = `m-${Date.now()}@example.com`;
+
+    // 1) 가입 시 인증 메일 발송
+    const emailUser = 'mailuser-' + Date.now();
+    const regEmail = await req('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ userId: emailUser, name: '메일유저', password: 'MailPass123', email: mailTo }),
+    });
+    record('이메일: 가입 시 인증 필요 표시', regEmail.status === 201 && regEmail.body.emailVerificationRequired === true, `status=${regEmail.status}`);
+    const verifyMail = mailer.lastMailTo(mailTo);
+    record('이메일: 인증 메일 발송', !!verifyMail, verifyMail ? verifyMail.subject : '없음');
+    const verifyToken = verifyMail && (verifyMail.html.match(/\?verify=([A-Za-z0-9_-]+)/) || [])[1];
+    record('이메일: 인증 링크 토큰 포함', !!verifyToken, '');
+
+    // 2) 잘못된 형식 이메일 거부
+    const badEmail = await req('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ userId: 'bademail-' + Date.now(), name: 'B', password: 'MailPass123', email: 'not-an-email' }),
+    });
+    record('이메일: 형식 오류 400', badEmail.status === 400 && badEmail.body.code === 'INVALID_EMAIL', `status=${badEmail.status}`);
+
+    // 3) 인증 완료 → 재사용 불가
+    if (verifyToken) {
+      const v1 = await req('/api/auth/verify-email', { method: 'POST', body: JSON.stringify({ token: verifyToken }) });
+      record('이메일: 인증 완료 200', v1.status === 200, `status=${v1.status}`);
+      const v2 = await req('/api/auth/verify-email', { method: 'POST', body: JSON.stringify({ token: verifyToken }) });
+      record('이메일: 인증 링크 1회만 사용', v2.status === 400 && v2.body.code === 'INVALID_TOKEN', `status=${v2.status}`);
+    }
+
+    // 4) 미등록 이메일 재전송: 계정 존재 여부 비노출
+    const resendUnknown = await req('/api/auth/resend-verification', {
+      method: 'POST', body: JSON.stringify({ email: 'nobody-' + Date.now() + '@example.com' }),
+    });
+    record('이메일: 미등록 주소 재전송도 200', resendUnknown.status === 200, `status=${resendUnknown.status}`);
+
+    // 5) 비밀번호 재설정 전체 흐름
+    const pwUser = 'pwuser-' + Date.now();
+    const pwEmail = `p-${Date.now()}@example.com`;
+    await req('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ userId: pwUser, name: '재설정', password: 'OldPass123', email: pwEmail }),
+    });
+    const oldLogin = await req('/api/auth/login', { method: 'POST', body: JSON.stringify({ userId: pwUser, password: 'OldPass123' }) });
+    const oldToken = oldLogin.body && oldLogin.body.token;
+
+    const forgot = await req('/api/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email: pwEmail }) });
+    record('이메일: 비밀번호 찾기 요청 200', forgot.status === 200, `status=${forgot.status}`);
+    const resetMail = mailer.lastMailTo(pwEmail);
+    const resetToken = resetMail && (resetMail.html.match(/\?reset=([A-Za-z0-9_-]+)/) || [])[1];
+    record('이메일: 재설정 링크 발송', !!resetToken, '');
+
+    if (resetToken) {
+      const reset = await req('/api/auth/reset-password', {
+        method: 'POST', body: JSON.stringify({ token: resetToken, newPassword: 'NewPass456' }),
+      });
+      record('이메일: 비밀번호 재설정 200', reset.status === 200, `status=${reset.status}`);
+      const tryOld = await req('/api/auth/login', { method: 'POST', body: JSON.stringify({ userId: pwUser, password: 'OldPass123' }) });
+      record('이메일: 기존 비밀번호로 로그인 불가', tryOld.status === 401, `status=${tryOld.status}`);
+      const tryNew = await req('/api/auth/login', { method: 'POST', body: JSON.stringify({ userId: pwUser, password: 'NewPass456' }) });
+      record('이메일: 새 비밀번호로 로그인 성공', tryNew.status === 200, `status=${tryNew.status}`);
+      if (oldToken) {
+        const stale = await req('/api/auth/me', { headers: { Authorization: 'Bearer ' + oldToken } });
+        record('이메일: 재설정 시 기존 세션 폐기', stale.status === 401, `status=${stale.status}`);
+      }
+      const reuse = await req('/api/auth/reset-password', {
+        method: 'POST', body: JSON.stringify({ token: resetToken, newPassword: 'ThirdPass7' }),
+      });
+      record('이메일: 재설정 링크 1회만 사용', reuse.status === 400, `status=${reuse.status}`);
+    }
+
+    // 6) 2FA 전체 흐름
+    const faUser = 'fauser-' + Date.now();
+    await req('/api/auth/register', {
+      method: 'POST', body: JSON.stringify({ userId: faUser, name: '2FA', password: 'FaPass12345' }),
+    });
+    const faLogin = await req('/api/auth/login', { method: 'POST', body: JSON.stringify({ userId: faUser, password: 'FaPass12345' }) });
+    const faToken = faLogin.body && faLogin.body.token;
+    const FA = { Authorization: `Bearer ${faToken}` };
+
+    const faStatus = await req('/api/auth/2fa/status', { headers: FA });
+    record('2FA: 초기 꺼짐', faStatus.body.enabled === false, `enabled=${faStatus.body.enabled}`);
+
+    const faSetup = await req('/api/auth/2fa/setup', { method: 'POST', headers: FA });
+    record('2FA: 설정 시작 - 시크릿/URI 발급', faSetup.status === 200 && !!faSetup.body.secret && !!faSetup.body.otpauthUri, `status=${faSetup.status}`);
+    const secret = faSetup.body && faSetup.body.secret;
+
+    // 아직 활성화 전이므로 코드 없이 로그인 가능해야 한다
+    const preLogin = await req('/api/auth/login', { method: 'POST', body: JSON.stringify({ userId: faUser, password: 'FaPass12345' }) });
+    record('2FA: 확정 전에는 로그인 영향 없음', preLogin.status === 200, `status=${preLogin.status}`);
+
+    const wrongConfirm = await req('/api/auth/2fa/confirm', { method: 'POST', headers: FA, body: JSON.stringify({ code: '000000' }) });
+    record('2FA: 오류 코드로 확정 불가', wrongConfirm.status === 400, `status=${wrongConfirm.status}`);
+
+    const confirm = await req('/api/auth/2fa/confirm', {
+      method: 'POST', headers: FA, body: JSON.stringify({ code: totpLib.currentCode(secret) }),
+    });
+    record('2FA: 활성화 + 복구 코드 발급', confirm.status === 200 && Array.isArray(confirm.body.recoveryCodes) && confirm.body.recoveryCodes.length === 10, `status=${confirm.status}`);
+    const recoveryCodes = confirm.body && confirm.body.recoveryCodes;
+
+    // 이제 로그인은 코드를 요구한다
+    const noCode = await req('/api/auth/login', { method: 'POST', body: JSON.stringify({ userId: faUser, password: 'FaPass12345' }) });
+    record('2FA: 코드 없이 로그인 차단', noCode.status === 401 && noCode.body.totpRequired === true, `status=${noCode.status}`);
+    const wrongCode = await req('/api/auth/login', { method: 'POST', body: JSON.stringify({ userId: faUser, password: 'FaPass12345', totpCode: '000000' }) });
+    record('2FA: 오류 코드 로그인 거부', wrongCode.status === 401, `status=${wrongCode.status}`);
+    const withCode = await req('/api/auth/login', { method: 'POST', body: JSON.stringify({ userId: faUser, password: 'FaPass12345', totpCode: totpLib.currentCode(secret) }) });
+    record('2FA: 올바른 코드로 로그인', withCode.status === 200 && !!withCode.body.token, `status=${withCode.status}`);
+
+    // 복구 코드로 로그인 → 1회성
+    if (recoveryCodes && recoveryCodes.length) {
+      const recLogin = await req('/api/auth/login', { method: 'POST', body: JSON.stringify({ userId: faUser, password: 'FaPass12345', totpCode: recoveryCodes[0] }) });
+      record('2FA: 복구 코드로 로그인', recLogin.status === 200 && recLogin.body.usedRecoveryCode === true, `status=${recLogin.status}`);
+      const recReuse = await req('/api/auth/login', { method: 'POST', body: JSON.stringify({ userId: faUser, password: 'FaPass12345', totpCode: recoveryCodes[0] }) });
+      record('2FA: 복구 코드 재사용 불가', recReuse.status === 401, `status=${recReuse.status}`);
+      // 남은 복구 코드 개수 확인
+      const after = await req('/api/auth/2fa/status', { headers: FA });
+      record('2FA: 사용 후 복구 코드 감소', after.body.recoveryCodesLeft === recoveryCodes.length - 1, `left=${after.body.recoveryCodesLeft}`);
+      // 복구 코드는 DB에 해시로만 저장된다
+      const recStored = await pool.query('SELECT recovery_codes FROM users WHERE id = $1', [faUser]);
+      const storedCodes = recStored.rows[0] && recStored.rows[0].recovery_codes;
+      const leaks = Array.isArray(storedCodes) && recoveryCodes.some((c) => (storedCodes || []).includes(c));
+      record('2FA: 복구 코드 평문 미저장', !leaks, storedCodes ? `stored=${storedCodes.length}건(해시)` : 'none');
+    }
+
+    // 7) 초대 메일 발송
+    const invMailTo = `inv-${Date.now()}@example.com`;
+    const orgForMail = await req('/api/organizations', {
+      method: 'POST', headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name: '메일초대조직', slug: 'mi-' + Date.now() }),
+    });
+    if (orgForMail.status === 201) {
+      const inv = await req(`/api/organizations/${orgForMail.body.organization.id}/invites`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ email: invMailTo, role: 'member' }),
+      });
+      record('초대: 생성 200', inv.status === 200, `status=${inv.status}`);
+      const invMail = mailer.lastMailTo(invMailTo);
+      record('초대: 메일 발송됨', !!invMail, invMail ? invMail.subject : '없음');
+      record('초대: 메일에 조직명 포함', !!(invMail && invMail.html.includes('메일초대조직')), '');
+      record('초대: 메일에 링크 포함', !!(invMail && inv.body.invite && invMail.html.includes(inv.body.invite.token)), '');
+      record('초대: 발송 결과 응답에 포함', inv.body.delivery && typeof inv.body.delivery.ok === 'boolean', JSON.stringify(inv.body.delivery));
+    }
+
     // --- Phase 3-4 대시보드 소비 시나리오 (UI가 쓰는 경로 그대로) ---
     const slug = 'dash-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
     const orgCreate = await req('/api/organizations', {
