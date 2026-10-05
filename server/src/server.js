@@ -26,7 +26,7 @@ const io = new Server(server, {
 
 // PostgreSQL connection pool with optimized settings
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://localhost:5432/tev1',
+  connectionString: process.env.DATABASE_URL || 'postgresql://tev1@localhost:5432/tev1',
   max: 20,
   min: 2,
   idleTimeoutMillis: 30000,
@@ -218,18 +218,18 @@ async function setupDatabase() {
           id VARCHAR(255) PRIMARY KEY,
           name VARCHAR(255) NOT NULL,
           color VARCHAR(7) NOT NULL,
-          created_at TIMESTAMP DEFAULT NOW()
+          created_at TIMESTAMPTZ DEFAULT NOW()
         );
         ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'offline';
         CREATE TABLE IF NOT EXISTS rooms (
           id VARCHAR(255) PRIMARY KEY,
           name VARCHAR(255) NOT NULL,
-          created_at TIMESTAMP DEFAULT NOW()
+          created_at TIMESTAMPTZ DEFAULT NOW()
         );
         CREATE TABLE IF NOT EXISTS room_users (
           room_id VARCHAR(255) REFERENCES rooms(id) ON DELETE CASCADE,
           user_id VARCHAR(255) REFERENCES users(id) ON DELETE CASCADE,
-          joined_at TIMESTAMP DEFAULT NOW(),
+          joined_at TIMESTAMPTZ DEFAULT NOW(),
           PRIMARY KEY (room_id, user_id)
         );
         CREATE TABLE IF NOT EXISTS messages (
@@ -237,14 +237,14 @@ async function setupDatabase() {
           room_id VARCHAR(255) REFERENCES rooms(id) ON DELETE CASCADE,
           user_id VARCHAR(255) REFERENCES users(id) ON DELETE SET NULL,
           content TEXT NOT NULL,
-          created_at TIMESTAMP DEFAULT NOW()
+          created_at TIMESTAMPTZ DEFAULT NOW()
         );
         CREATE TABLE IF NOT EXISTS cursors (
           room_id VARCHAR(255) NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
           user_id VARCHAR(255) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
           x INTEGER NOT NULL,
           y INTEGER NOT NULL,
-          updated_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMPTZ DEFAULT NOW(),
           PRIMARY KEY (room_id, user_id)
         );
         CREATE TABLE IF NOT EXISTS user_tokens (
@@ -254,7 +254,7 @@ async function setupDatabase() {
           access_token TEXT NOT NULL,
           refresh_token TEXT,
           expiry BIGINT,
-          created_at TIMESTAMP DEFAULT NOW(),
+          created_at TIMESTAMPTZ DEFAULT NOW(),
           UNIQUE(user_id, provider)
         );
         CREATE INDEX IF NOT EXISTS idx_messages_room_created ON messages(room_id, created_at DESC);
@@ -268,8 +268,8 @@ async function setupDatabase() {
           description TEXT,
           logo_url TEXT,
           settings JSONB DEFAULT '{}',
-          created_at TIMESTAMP DEFAULT NOW(),
-          updated_at TIMESTAMP DEFAULT NOW()
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          updated_at TIMESTAMPTZ DEFAULT NOW()
         );
 
         -- 조직 멤버십 (사용자-조직 연결)
@@ -278,7 +278,7 @@ async function setupDatabase() {
           organization_id VARCHAR(255) REFERENCES organizations(id) ON DELETE CASCADE,
           user_id VARCHAR(255) REFERENCES users(id) ON DELETE CASCADE,
           role VARCHAR(50) NOT NULL DEFAULT 'member', -- owner, admin, member, viewer
-          joined_at TIMESTAMP DEFAULT NOW(),
+          joined_at TIMESTAMPTZ DEFAULT NOW(),
           UNIQUE(organization_id, user_id)
         );
 
@@ -289,7 +289,7 @@ async function setupDatabase() {
           description TEXT,
           permissions JSONB NOT NULL DEFAULT '[]', -- 권한 목록
           is_system BOOLEAN DEFAULT false,
-          created_at TIMESTAMP DEFAULT NOW()
+          created_at TIMESTAMPTZ DEFAULT NOW()
         );
 
         -- 방-조직 연결 (조직 내 방)
@@ -309,7 +309,7 @@ async function setupDatabase() {
           invited_by VARCHAR(255) REFERENCES users(id),
           expires_at TIMESTAMP NOT NULL,
           accepted_at TIMESTAMP,
-          created_at TIMESTAMP DEFAULT NOW()
+          created_at TIMESTAMPTZ DEFAULT NOW()
         );
 
         -- 감사 로그 (보안/컴플라이언스용)
@@ -323,7 +323,7 @@ async function setupDatabase() {
           metadata JSONB DEFAULT '{}',
           ip_address INET,
           user_agent TEXT,
-          created_at TIMESTAMP DEFAULT NOW()
+          created_at TIMESTAMPTZ DEFAULT NOW()
         );
 
         CREATE INDEX IF NOT EXISTS idx_org_members_user ON organization_members(user_id);
@@ -334,7 +334,24 @@ async function setupDatabase() {
         CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON audit_logs(user_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_invites_token ON organization_invites(token);
         CREATE INDEX IF NOT EXISTS idx_invites_email ON organization_invites(email);
+
+        CREATE TABLE IF NOT EXISTS push_subscriptions (
+          id SERIAL PRIMARY KEY,
+          user_id VARCHAR(255) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          endpoint TEXT NOT NULL,
+          p256dh TEXT NOT NULL,
+          auth TEXT NOT NULL,
+          user_agent TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          UNIQUE(user_id, endpoint)
+        );
+        CREATE INDEX IF NOT EXISTS idx_push_subs_user ON push_subscriptions(user_id);
       `);
+
+      // 이전 스키마(timestamp without time zone)를 timestamptz로 승격한다.
+      // Node는 UTC ISO 문자열을 보내므로, 로컬 timestamp와 비교하면 경계가 어긋나
+      // 조회 결과가 0건이 되는 문제가 있다.
+      await migrateTimestampsToTimestamptz(client);
       console.log('Database tables created/verified');
       dbAvailable = true;
     } finally {
@@ -354,11 +371,52 @@ async function setupDatabase() {
   }
 }
 
+/** timestamp 컬럼을 timestamptz로 승격 (UTC 기준으로 재해석) */
+async function migrateTimestampsToTimestamptz(client) {
+  const targets = {
+    users: ['created_at'],
+    rooms: ['created_at'],
+    room_users: ['joined_at'],
+    messages: ['created_at'],
+    cursors: ['updated_at'],
+    user_tokens: ['created_at'],
+    organizations: ['created_at', 'updated_at'],
+    organization_members: ['joined_at'],
+    organization_invites: ['expires_at', 'accepted_at', 'created_at'],
+    audit_logs: ['created_at'],
+    push_subscriptions: ['created_at'],
+  };
+
+  for (const [table, cols] of Object.entries(targets)) {
+    for (const col of cols) {
+      const typeRes = await client.query(
+        `SELECT data_type FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2`,
+        [table, col]
+      );
+      if (typeRes.rows.length === 0 || typeRes.rows[0].data_type !== 'timestamp without time zone') {
+        continue;
+      }
+      // 기존 값은 UTC로 저장되어 있었으므로 UTC 기준을 명시하고 timestamptz로 승격
+      await client.query(
+        `ALTER TABLE ${table} ALTER COLUMN ${col}
+         TYPE TIMESTAMPTZ USING ${col} AT TIME ZONE 'UTC'`
+      );
+      console.log(`Migrated ${table}.${col} -> timestamptz`);
+    }
+  }
+}
+
 // 스키마 초기화 (DB 미가용이어도 서버는 계속 기동)
-setupDatabase().catch((e) => {
-  console.error('setupDatabase failed:', e.message);
-  dbAvailable = false;
-});
+// 기본 역할 시드는 테이블 생성 이후에만 안전하게 삽입할 수 있다
+const bootstrapPromise = setupDatabase()
+  .then(async () => {
+    await initializeSystemRoles();
+  })
+  .catch((e) => {
+    console.error('setupDatabase failed:', e.message);
+    dbAvailable = false;
+  });
 
 // Socket.IO Redis adapter for scaling (Redis 가용 시에만 활성화)
 (async () => {
@@ -1616,12 +1674,14 @@ async function initializeSystemRoles() {
     }
     console.log('System roles initialized');
   } catch (e) {
-    console.error('Role initialization error:', e);
+    // 부트 시점에 테이블이 아직 없거나 DB가 준비되지 않은 경우가 있으므로
+    // 치명 오류로 취급하지 않고 경고만 남긴다.
+    console.warn('Role initialization skipped:', e.message);
   }
 }
 
-// setupDatabase 완료 후 호출
-initializeSystemRoles().catch(console.error);
+// 기본 시스템 역할은 bootstrapPromise 체인에서 초기화된다
+// (여기서 별도로 호출하면 테이블 생성 전에 실행되어 실패한다)
 
 // ============================================
 // 푸시 알림 API
@@ -1643,20 +1703,6 @@ app.use('/api/push', requireAuth, requireDb, (req, res, next) => {
   next();
 });
 
-// Push 구독 저장 테이블 생성 (setupDatabase에 추가 필요)
-const PUSH_SUBSCRIPTIONS_TABLE = `
-  CREATE TABLE IF NOT EXISTS push_subscriptions (
-    id SERIAL PRIMARY KEY,
-    user_id VARCHAR(255) REFERENCES users(id) ON DELETE CASCADE,
-    endpoint TEXT NOT NULL,
-    p256dh TEXT NOT NULL,
-    auth TEXT NOT NULL,
-    user_agent TEXT,
-    created_at TIMESTAMP DEFAULT NOW(),
-    UNIQUE(user_id, endpoint)
-  );
-`;
-
 // 푸시 구독 저장
 app.post('/api/push/subscribe', async (req, res) => {
   try {
@@ -1665,10 +1711,13 @@ app.post('/api/push/subscribe', async (req, res) => {
       return res.status(400).json({ error: 'userId and subscription required' });
     }
 
-    // 테이블 확인/생성
-    await pool.query(PUSH_SUBSCRIPTIONS_TABLE);
-
+    // 스키마는 setupDatabase에서 보장된다.
+    // 인증된 사용자라 해도 users 행이 없을 수 있으므로(토큰만 발급된 경우) 보장 삽입한다.
     const keys = subscription.keys || {};
+    await pool.query(
+      'INSERT INTO users (id, name, color) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING',
+      [userId, req.user && req.user.name ? req.user.name : userId, getRandomColor()]
+    );
     await pool.query(
       'INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (user_id, endpoint) DO UPDATE SET p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth, user_agent = EXCLUDED.user_agent',
       [userId, subscription.endpoint, keys.p256dh || '', keys.auth || '', req.headers['user-agent'] || '']
@@ -1873,13 +1922,20 @@ app.get('/api/analytics/meetings/summary', async (req, res) => {
       WHERE ro.organization_id = $1 AND m.created_at BETWEEN $2 AND $3
     `, [orgId, start, end]);
 
+    // 방별(회의별) 소요시간을 부분집계로 구한 뒤 평균을 낸다.
+    // AVG(MAX()-MIN())처럼 집계 중첩은 PostgreSQL에서 허용되지 않는다.
     const avgDuration = await pool.query(`
-      SELECT AVG(EXTRACT(EPOCH FROM (MAX(m.created_at) - MIN(m.created_at)))/60) as avg_minutes
-      FROM messages m
-      JOIN rooms r ON m.room_id = r.id
-      JOIN room_organizations ro ON r.id = ro.room_id
-      WHERE ro.organization_id = $1 AND r.created_at BETWEEN $2 AND $3
-      GROUP BY r.id
+      SELECT AVG(EXTRACT(EPOCH FROM (span.last_at - span.first_at)) / 60) AS avg_minutes
+      FROM (
+        SELECT m.room_id,
+               MIN(m.created_at) AS first_at,
+               MAX(m.created_at) AS last_at
+        FROM messages m
+        JOIN rooms r ON m.room_id = r.id
+        JOIN room_organizations ro ON r.id = ro.room_id
+        WHERE ro.organization_id = $1 AND r.created_at BETWEEN $2 AND $3
+        GROUP BY m.room_id
+      ) AS span
     `, [orgId, start, end]);
 
     const dailyMeetings = await pool.query(`
@@ -1933,18 +1989,33 @@ app.get('/api/analytics/users/:userId/productivity', async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    // 집계 중첩을 피하기 위해 회의/메시지 집계와 소요시간 계산을 분리한다.
     const meetings = await pool.query(`
-      SELECT 
-        COUNT(DISTINCT r.id) as meetings_attended,
-        COUNT(DISTINCT m.id) as messages_sent,
-        AVG(EXTRACT(EPOCH FROM (MAX(m.created_at) - MIN(m.created_at)))/60) as avg_duration_minutes,
-        COUNT(DISTINCT CASE WHEN m.created_at::date = CURRENT_DATE THEN r.id END) as meetings_today
+      SELECT
+        COUNT(DISTINCT r.id) AS meetings_attended,
+        COUNT(DISTINCT m.id) AS messages_sent,
+        COUNT(DISTINCT CASE WHEN m.created_at::date = CURRENT_DATE THEN r.id END) AS meetings_today
       FROM rooms r
       JOIN room_organizations ro ON r.id = ro.room_id
       LEFT JOIN messages m ON r.id = m.room_id AND m.user_id = $1
       JOIN room_users ru ON r.id = ru.room_id
       WHERE ro.organization_id = $2 AND ru.user_id = $1 AND r.created_at BETWEEN $3 AND $4
     `, [userId, orgId, start, end]);
+
+    const userSpan = await pool.query(`
+      SELECT AVG(EXTRACT(EPOCH FROM (span.last_at - span.first_at)) / 60) AS avg_minutes
+      FROM (
+        SELECT m.room_id, MIN(m.created_at) AS first_at, MAX(m.created_at) AS last_at
+        FROM messages m
+        JOIN rooms r ON m.room_id = r.id
+        JOIN room_organizations ro ON r.id = ro.room_id
+        JOIN room_users ru ON r.id = ru.room_id
+        WHERE m.user_id = $1 AND ro.organization_id = $2 AND ru.user_id = $1
+          AND r.created_at BETWEEN $3 AND $4
+        GROUP BY m.room_id
+      ) AS span
+    `, [userId, orgId, start, end]);
+    const avgMinutes = userSpan.rows[0] ? userSpan.rows[0].avg_minutes : null;
 
     const dailyActivity = await pool.query(`
       SELECT DATE(m.created_at) as date, COUNT(*) as message_count
@@ -1984,7 +2055,7 @@ app.get('/api/analytics/users/:userId/productivity', async (req, res) => {
       period: { start, end },
       meetingsAttended: parseInt(meetings.rows[0].meetings_attended),
       messagesSent: parseInt(meetings.rows[0].messages_sent),
-      avgMeetingDurationMinutes: Math.round(meetings.rows[0].avg_duration_minutes || 0),
+      avgMeetingDurationMinutes: Math.round(avgMinutes || 0),
       meetingsToday: parseInt(meetings.rows[0].meetings_today),
       dailyActivity: dailyActivity.rows,
       hourlyActivity: hourlyActivity.rows,
@@ -2319,4 +2390,6 @@ server.listen(PORT, () => {
   console.log(`Web Push:      ${pushEnabled ? 'enabled' : 'disabled (set VAPID keys)'}`);
 });
 
-module.exports = { app, server, io, pool, redis };
+// 부트 준비 신호: 스키마 생성(및 기본 역할 시드)이 끝나면 resolve된다.
+// 테스트나 상위 코드가 이 프라미스를 await하면 스키마 없이 쿼리를 보내지 않는다.
+module.exports = { app, server, io, pool, redis, ready: bootstrapPromise };

@@ -23,6 +23,14 @@ delete process.env.GOOGLE_CLIENT_SECRET;
 const BASE = `http://127.0.0.1:${PORT}`;
 const results = [];
 
+// DB/Redis 실경로 검증은 해당 서버가 기동 중일 때만 수행한다.
+// (TEV1_SKIP_DB=1 로 건너뛸 수 있다)
+const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://tev1@127.0.0.1:5432/tev1';
+const REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
+const SKIP_DB = process.env.TEV1_SKIP_DB === '1';
+process.env.DATABASE_URL = DATABASE_URL;
+process.env.REDIS_URL = REDIS_URL;
+
 function record(name, ok, detail) {
   results.push({ name, ok, detail });
   const mark = ok ? 'PASS' : 'FAIL';
@@ -55,7 +63,12 @@ async function waitForReady(timeoutMs) {
 async function main() {
   const started = Date.now();
   const mod = require(path.join(__dirname, '..', 'src', 'server.js'));
-  const { server, io } = mod;
+  const { server, io, ready } = mod;
+
+  // 스키마 생성이 끝날 때까지 대기 (테이블 없음으로 인한 쿼리 실패 방지)
+  if (ready && typeof ready.then === 'function') {
+    await ready.catch(() => {});
+  }
 
   const up = await waitForReady(TIMEOUT_MS);
   record('서버 기동', up, up ? `${Date.now() - started}ms` : '기동超时');
@@ -143,14 +156,18 @@ async function main() {
     record('분석 API 토큰 없이 401', false, e.message);
   }
 
-  // 6-2) 인증되었지만 DB 미가용이면 503
+  // 6-2) DB 미가용 환경에서만 503을 기대한다 (DB가 있으면 실제 조회로 이어진다)
   try {
     const { status, body } = await req('/api/analytics/meetings/summary?orgId=x', {
       headers: { Authorization: `Bearer ${token}` },
     });
-    record('분석 API DB 미가용 503', status === 503 && body && body.code === 'DB_UNAVAILABLE', `status=${status} code=${body && body.code}`);
+    if (status === 503) {
+      record('분석 API DB 미가용 503', body && body.code === 'DB_UNAVAILABLE', `status=${status} code=${body && body.code}`);
+    } else {
+      record('분석 API DB 가용 상태로 통과', status === 200, `status=${status}`);
+    }
   } catch (e) {
-    record('분석 API DB 미가용 503', false, e.message);
+    record('분석 API DB 상태 처리', false, e.message);
   }
 
   // 6-3) VAPID 공개키는 인증 없이 접근 가능해야 한다 (공개키)
@@ -186,6 +203,13 @@ async function main() {
     record('없는 라우트 404', false, e.message);
   }
 
+  // ---------- DB/Redis 실경로 검증 ----------
+  if (SKIP_DB) {
+    record('DB/Redis 실경로', true, 'TEV1_SKIP_DB=1 로 건너뜀');
+  } else {
+    await runDbSuite(token);
+  }
+
   const failed = results.filter((r) => !r.ok);
   console.log(`\n요약: ${results.length - failed.length}/${results.length} 통과 (${Date.now() - started}ms)`);
   if (failed.length) {
@@ -194,6 +218,163 @@ async function main() {
   }
 
   await shutdown(server, io, failed.length ? 1 : 0);
+}
+
+/** 실제 DB에 스키마 생성 후 데이터 삽입 -> 분석 쿼리까지 검증 */
+async function runDbSuite(token) {
+  const { Pool } = require('pg');
+  const pool = new Pool({ connectionString: DATABASE_URL, connectionTimeoutMillis: 5000 });
+  const orgId = 'smoke-org';
+  const userA = 'smoke-user';
+  const userB = 'smoke-user-b';
+
+  try {
+    await pool.query('SELECT 1');
+    record('PostgreSQL 연결', true, DATABASE_URL.replace(/:[^:@/]*@/, ':***@'));
+  } catch (e) {
+    record('PostgreSQL 연결', false, e.message);
+    await pool.end().catch(() => {});
+    return;
+  }
+
+  try {
+    // 서버가 기동하며 만든 테이블 확인 (users.status, cursors UNIQUE 포함)
+    const cols = await pool.query(
+      "SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='status'"
+    );
+    record('users.status 컬럼 존재', cols.rows.length === 1);
+
+    const cur = await pool.query(
+      `SELECT tc.constraint_name FROM information_schema.table_constraints tc
+       WHERE tc.table_name='cursors' AND tc.constraint_type='PRIMARY KEY'`
+    );
+    record('cursors PK 생성 (ON CONFLICT prerequisite)', cur.rows.length > 0);
+
+    const tbls = await pool.query(
+      "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name = ANY($1)",
+      [['organizations', 'organization_members', 'audit_logs', 'messages', 'rooms', 'room_users', 'cursors', 'users']]
+    );
+    record('핵심 테이블 8종 생성', tbls.rows.length === 8, `${tbls.rows.length}/8`);
+
+    // 대표 데이터 구성
+    await pool.query(
+      `INSERT INTO organizations (id, name, slug) VALUES ($1,$2,$3)
+       ON CONFLICT (id) DO NOTHING`,
+      [orgId, '스모크 조직', 'smoke-org']
+    );
+    for (const [uid, name] of [[userA, '알리'], [userB, '버트']]) {
+      await pool.query(
+        `INSERT INTO users (id, name, color) VALUES ($1,$2,$3) ON CONFLICT (id) DO NOTHING`,
+        [uid, name, '#4ECDC4']
+      );
+    }
+    await pool.query(
+      `INSERT INTO organization_members (organization_id, user_id, role) VALUES ($1,$2,'owner')
+       ON CONFLICT (organization_id, user_id) DO NOTHING`,
+      [orgId, userA]
+    );
+    const roomId = 'smoke-room';
+    await pool.query(
+      `INSERT INTO rooms (id, name) VALUES ($1,$2) ON CONFLICT (id) DO NOTHING`,
+      [roomId, '스모크 회의']
+    );
+    await pool.query(
+      `INSERT INTO room_organizations (room_id, organization_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+      [roomId, orgId]
+    );
+    for (const uid of [userA, userB]) {
+      await pool.query(
+        `INSERT INTO room_users (room_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+        [roomId, uid]
+      );
+    }
+    for (const uid of [userA, userB, userA, userB, userA]) {
+      await pool.query('INSERT INTO messages (room_id, user_id, content) VALUES ($1,$2,$3)', [roomId, uid, '결정 로그 테스트']);
+    }
+    // 커서 upsert (ON CONFLICT 경로)
+    await pool.query(
+      `INSERT INTO cursors (room_id, user_id, x, y, updated_at) VALUES ($1,$2,10,20,NOW())
+       ON CONFLICT (room_id, user_id) DO UPDATE SET x=EXCLUDED.x, y=EXCLUDED.y, updated_at=NOW()`,
+      [roomId, userA]
+    );
+    await pool.query(
+      `INSERT INTO cursors (room_id, user_id, x, y, updated_at) VALUES ($1,$2,99,77,NOW())
+       ON CONFLICT (room_id, user_id) DO UPDATE SET x=EXCLUDED.x, y=EXCLUDED.y, updated_at=NOW()`,
+      [roomId, userA]
+    );
+    const curRow = await pool.query('SELECT x, y FROM cursors WHERE room_id=$1 AND user_id=$2', [roomId, userA]);
+    record('cursor upsert 반영 (x=99)', curRow.rows[0].x === 99, `x=${curRow.rows[0] && curRow.rows[0].x}`);
+    await pool.query(
+      'INSERT INTO audit_logs (organization_id, user_id, action, resource_type) VALUES ($1,$2,$3,$4)',
+      [orgId, userA, 'create', 'organization']
+    );
+
+    // --- Phase 3-4 분석 API 실경로 ---
+    const summary = await req(`/api/analytics/meetings/summary?orgId=${orgId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const sOk = summary.status === 200 && summary.body && summary.body.totalMeetings >= 1;
+    record('분석: 회의 요약', sOk, `status=${summary.status} meetings=${summary.body && summary.body.totalMeetings} messages=${summary.body && summary.body.totalMessages}`);
+
+    const prod = await req(`/api/analytics/users/${userA}/productivity?orgId=${orgId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const pOk = prod.status === 200 && prod.body && prod.body.messagesSent >= 1;
+    record('분석: 사용자 생산성', pOk, `status=${prod.status} msgs=${prod.body && prod.body.messagesSent}`);
+
+    const trends = await req(`/api/analytics/organizations/${orgId}/trends?period=30d`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const tOk = trends.status === 200 && Array.isArray(trends.body && trends.body.dailyTrends);
+    record('분석: 조직 트렌드', tOk, `status=${trends.status} days=${trends.body && trends.body.dailyTrends && trends.body.dailyTrends.length}`);
+
+    const rt = await req(`/api/analytics/realtime?orgId=${orgId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const rOk = rt.status === 200 && Array.isArray(rt.body && rt.body.activeMeetings);
+    record('분석: 실시간 대시보드', rOk, `status=${rt.status} online=${rt.body && rt.body.onlineUsers}`);
+
+    const audit = await req(`/api/analytics/audit?orgId=${orgId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const aOk = audit.status === 200 && Array.isArray(audit.body && audit.body.logs);
+    record('분석: 감사 로그', aOk, `status=${audit.status} logs=${audit.body && audit.body.logs && audit.body.logs.length}`);
+
+    const metrics = await req('/metrics');
+    const mOk = metrics.status === 200 && String(metrics.body).includes('tev1_users_total');
+    record('Prometheus /metrics', mOk, `status=${metrics.status}`);
+
+    // --- 조직 API 실경로 ---
+    const orgList = await req(`/api/organizations`, { headers: { Authorization: `Bearer ${token}` } });
+    record('조직: 목록', orgList.status === 200 && orgList.body.organizations.length >= 1, `status=${orgList.status} count=${orgList.body && orgList.body.organizations && orgList.body.organizations.length}`);
+
+    const orgDetail = await req(`/api/organizations/${orgId}`, { headers: { Authorization: `Bearer ${token}` } });
+    record('조직: 상세(멤버/방)', orgDetail.status === 200 && orgDetail.body.members.length >= 1, `members=${orgDetail.body && orgDetail.body.members && orgDetail.body.members.length} rooms=${orgDetail.body && orgDetail.body.rooms && orgDetail.body.rooms.length}`);
+
+    // --- 인증 실경로 (login이 DB에 사용자 생성) ---
+    const newUser = 'smoke-login-' + Date.now();
+    const login = await req('/api/auth/login', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ userId: newUser, name: '로그인테스터' }),
+    });
+    const lOk = login.status === 200 && typeof login.body.token === 'string';
+    record('인증: login 사용자 자동 생성', lOk, `status=${login.status}`);
+
+    const me = await req('/api/auth/me', { headers: { Authorization: `Bearer ${login.body && login.body.token}` } });
+    const meOk = me.status === 200 && me.body && me.body.user && me.body.user.id === newUser;
+    record('인증: /me 조회 (userId 스푸핑 차단)', meOk, `status=${me.status} id=${me.body && me.body.user && me.body.user.id}`);
+
+    // --- health가 DB를 connected로 보고하는지 ---
+    const health = await req('/health');
+    record('헬스체크 DB connected', health.status === 200 && health.body.database === 'connected', `database=${health.body && health.body.database}`);
+    const health2 = await req('/health/detailed');
+    record('헬스체크 상세 DB up', health2.status === 200 && health2.body.services.database.status === 'up', `db=${health2.body && health2.body.services && health2.body.services.database.status}`);
+  } catch (e) {
+    record('DB 스위트 실행', false, e.message);
+  } finally {
+    await pool.end().catch(() => {});
+  }
 }
 
 function testSocketFlow(token) {

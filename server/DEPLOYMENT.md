@@ -273,3 +273,56 @@ kubectl logs -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx
 - [NGINX Ingress Controller](https://kubernetes.github.io/ingress-nginx/)
 - [Cert-Manager](https://cert-manager.io/docs/)
 - [Prometheus Operator](https://prometheus-operator.dev/)
+---
+
+## 로컬 환경 구성 (root 권한 없는 경우)
+
+Docker가 없는 환경에서는 사용자 영역에 직접 설치할 수 있다.
+
+### PostgreSQL
+
+```bash
+sudo apt-get install -y postgresql-16 postgresql-client-16   # root 사용 가능 시
+# 또는 사용자 영역 설치
+mkdir -p /tmp/pgsetup && cd /tmp/pgsetup
+apt-get download postgresql-16 postgresql-client-16 postgresql-common \
+  postgresql-client-common libpq5 libllvm18 libicu74 libssl3t64 libreadline8t64
+for f in *.deb; do dpkg -x "$f" root; done
+export PGBIN=/tmp/pgsetup/root/usr/lib/postgresql/16/bin
+export PGDATA=/tmp/pgdata
+export LD_LIBRARY_PATH=/tmp/pgsetup/root/usr/lib/x86_64-linux-gnu
+$PGBIN/initdb -D $PGDATA -U tev1 --auth=trust -E UTF8 --locale=C
+$PGBIN/postgres -D $PGDATA -p 5432 -k $PGDATA &
+$PGBIN/psql -h 127.0.0.1 -U tev1 -d postgres -c "CREATE DATABASE tev1 OWNER tev1;"
+$PGBIN/psql -h 127.0.0.1 -U tev1 -d postgres -c "ALTER DATABASE tev1 SET timezone TO 'UTC';"
+```
+
+> **시간대 주의**: 애플리케이션은 UTC ISO 문자열을 보낸다. DB를 UTC로 고정해야
+> `created_at` 비교가 어긋나지 않는다. (애플리케이션이 최초 기동 시
+> `timestamp` → `timestamptz` 마이그레이션을 자동 수행한다)
+
+### Redis
+
+```bash
+curl -sL -o redis.tar.gz https://github.com/redis/redis/archive/refs/tags/7.4.2.tar.gz
+tar xzf redis.tar.gz && cd redis-7.4.2
+make -j4 MALLOC=libc redis-server redis-cli
+./src/redis-server --port 6379 --bind 127.0.0.1 --save '' --appendonly no &
+```
+
+### 검증
+
+```bash
+cd server
+npm test                        # 프론트 9항목 + 서버 33항목
+TEV1_SKIP_DB=1 npm run test:smoke   # DB 없이 degradation 경로 17항목
+```
+
+## Web Push VAPID 키 생성
+
+```bash
+node -e "console.log(JSON.stringify(require('web-push').generateVAPIDKeys()))"
+```
+
+생성된 키 쌍을 `.env`에 설정한다. 미설정 시 푸시 API는 503
+(`PUSH_DISABLED`)을 반환하며 서버는 정상 기동한다.
