@@ -1,4 +1,5 @@
 require('dotenv').config();
+const crypto = require('crypto');
 const express = require('express');
 const http = require('http');
 const jwt = require('jsonwebtoken');
@@ -8,14 +9,44 @@ const { Pool } = require('pg');
 const Redis = require('ioredis');
 const { createAdapter } = require('@socket.io/redis-adapter');
 const { Server } = require('socket.io');
+const {
+  hashPassword,
+  verifyPassword,
+  validatePassword,
+  validateUserId,
+  dummyVerify,
+} = require('./auth');
 
 const app = express();
 const server = http.createServer(app);
 
 // Express 미들웨어 (누락 시 모든 POST/PATCH/DELETE body 파싱이 실패한다)
-app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
+const CORS_ORIGIN = process.env.CORS_ORIGIN || '*';
+app.use(cors({
+  origin: CORS_ORIGIN === '*' ? true : CORS_ORIGIN.split(',').map((s) => s.trim()),
+  credentials: true,
+}));
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// 보안 헤더 (외부 의존성 없이 직접 설정)
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('X-Frame-Options', 'SAMEORIGIN');
+  res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.set('X-XSS-Protection', '0'); // 구식 필터는 취약점을 만들 수 있어 비활성화
+  res.set(
+    'Content-Security-Policy',
+    "default-src 'self'; script-src 'self' 'unsafe-inline' http://localhost:8081; " +
+      "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss: http://localhost:8081; " +
+      "media-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'"
+  );
+  if (String(req.secure) === 'true') {
+    res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+  next();
+});
 
 const io = new Server(server, {
   cors: {
@@ -221,6 +252,37 @@ async function setupDatabase() {
           created_at TIMESTAMPTZ DEFAULT NOW()
         );
         ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'offline';
+        -- 인증 컬럼 (비밀번호 해시, 활성/비활성, 로그인 추적)
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_logins INTEGER DEFAULT 0;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(320);
+
+        -- 세션 관리 (로그아웃/강제 만료 지원)
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+          jti VARCHAR(64) PRIMARY KEY,
+          user_id VARCHAR(255) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          user_agent TEXT,
+          ip_address INET,
+          created_at TIMESTAMPTZ DEFAULT NOW(),
+          expires_at TIMESTAMPTZ NOT NULL,
+          revoked_at TIMESTAMPTZ
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
+        CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
+
+        -- 로그인 실패 감사 (브루트포스 탐지/대응에 사용)
+        CREATE TABLE IF NOT EXISTS login_attempts (
+          id SERIAL PRIMARY KEY,
+          user_id VARCHAR(255),
+          ip_address INET,
+          success BOOLEAN NOT NULL,
+          reason TEXT,
+          created_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_login_attempts_user_time ON login_attempts(user_id, created_at DESC);
         CREATE TABLE IF NOT EXISTS rooms (
           id VARCHAR(255) PRIMARY KEY,
           name VARCHAR(255) NOT NULL,
@@ -385,6 +447,9 @@ async function migrateTimestampsToTimestamptz(client) {
     organization_invites: ['expires_at', 'accepted_at', 'created_at'],
     audit_logs: ['created_at'],
     push_subscriptions: ['created_at'],
+    users: ['created_at', 'last_login_at', 'locked_until'],
+    auth_sessions: ['created_at', 'expires_at', 'revoked_at'],
+    login_attempts: ['created_at'],
   };
 
   for (const [table, cols] of Object.entries(targets)) {
@@ -452,21 +517,34 @@ function extractToken(req) {
   return null;
 }
 
-// 인증 필수 미들웨어: userId를 쿼리스트링으로 신뢰하지 않고 JWT에서만 읽는다
+// 인증 필수 미들웨어
+// - userId를 쿼리스트링/바디로 받지 않고 JWT에서만 신뢰한다
+// - 서명뿐 아니라 DB 세션(폐기·만료)도 확인하므로 로그아웃/비밀번호 변경이 즉시 반영된다
 function requireAuth(req, res, next) {
   const token = extractToken(req);
   if (!token) {
-    return res.status(401).json({ error: 'Authentication required', code: 'NO_TOKEN' });
+    return res.status(401).json({ error: '로그인이 필요합니다.', code: 'NO_TOKEN' });
   }
   const decoded = verifyToken(token);
   if (!decoded) {
-    return res.status(401).json({ error: 'Invalid or expired token', code: 'INVALID_TOKEN' });
+    return res.status(401).json({ error: '세션이 만료되었거나 유효하지 않습니다.', code: 'INVALID_TOKEN' });
   }
-  req.user = { id: decoded.userId, name: decoded.name };
-  // 하위 핸들러가 기존 userId 파라미터를 쓰므로 덮어써 신뢰 경로를 제거한다
-  if (req.query) req.query.userId = decoded.userId;
-  if (req.body) req.body.userId = decoded.userId;
-  next();
+
+  isSessionActive(decoded)
+    .then((active) => {
+      if (!active) {
+        return res.status(401).json({ error: '세션이 종료되었습니다. 다시 로그인하세요.', code: 'SESSION_REVOKED' });
+      }
+      req.user = { id: decoded.userId, name: decoded.name };
+      req.sessionId = decoded.jti;
+      // 하위 핸들러가 기존 userId 파라미터를 쓰므로 덮어써 신뢰 경로를 제거한다
+      if (req.query) req.query.userId = decoded.userId;
+      if (req.body) req.body.userId = decoded.userId;
+      next();
+    })
+    .catch(() => {
+      res.status(401).json({ error: '인증 확인에 실패했습니다.', code: 'AUTH_CHECK_FAILED' });
+    });
 }
 
 // DB 필요 미들웨어: 가용하지 않으면 500이 아니라 503으로 명확히 알린다
@@ -492,12 +570,15 @@ function getRandomColor() {
   return colors[Math.floor(Math.random() * colors.length)];
 }
 
-// Generate JWT token
-function generateToken(userId, name) {
-  return jwt.sign({ userId, name, iat: Date.now() }, JWT_SECRET, { expiresIn: '24h' });
+// 세션 수명 (기본 12시간)
+const SESSION_TTL_HOURS = Number(process.env.SESSION_TTL_HOURS || 12);
+
+// JWT 발급: jti를 넣어 개별 세션 폐기(로그아웃)를 가능하게 한다
+function generateToken(userId, name, jti) {
+  return jwt.sign({ userId, name, jti }, JWT_SECRET, { expiresIn: `${SESSION_TTL_HOURS}h` });
 }
 
-// Verify JWT token
+// JWT 검증 (서명/만료 확인)
 function verifyToken(token) {
   try {
     return jwt.verify(token, JWT_SECRET);
@@ -505,6 +586,109 @@ function verifyToken(token) {
     return null;
   }
 }
+
+// 세션 발급: JWT + DB 세션 레코드(jti) 생성
+async function issueSession({ userId, name }, req) {
+  const jti = uuidv4();
+  const token = generateToken(userId, name, jti);
+  const expiresAt = new Date(Date.now() + SESSION_TTL_HOURS * 3600 * 1000);
+  try {
+    await pool.query(
+      `INSERT INTO auth_sessions (jti, user_id, user_agent, ip_address, expires_at)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [jti, userId, (req && req.headers['user-agent']) || null, clientIp(req), expiresAt]
+    );
+  } catch (e) {
+    console.error('issueSession persist failed:', e.message);
+  }
+  return token;
+}
+
+// 세션 유효성 확인 (폐기/만료 여부)
+async function isSessionActive(decoded) {
+  if (!decoded || !decoded.jti) return false;
+  try {
+    const r = await pool.query(
+      'SELECT 1 FROM auth_sessions WHERE jti = $1 AND revoked_at IS NULL AND expires_at > NOW()',
+      [decoded.jti]
+    );
+    return r.rows.length > 0;
+  } catch (e) {
+    // DB를 확인할 수 없으면 서명만 유효한 토큰을 허용하지 않는다(안전 우선)
+    console.error('isSessionActive failed:', e.message);
+    return false;
+  }
+}
+
+// 클라이언트 IP 추출 (프록시 환경 대응)
+function clientIp(req) {
+  if (!req) return null;
+  const fwd = req.headers['x-forwarded-for'];
+  if (fwd) return String(fwd).split(',')[0].trim();
+  return req.ip || req.socket && req.socket.remoteAddress || null;
+}
+
+// 로그인 시도 기록 (감사/브루트포스 탐지)
+async function recordLoginAttempt(userId, req, success, reason) {
+  if (!dbAvailable) return;
+  try {
+    await pool.query(
+      'INSERT INTO login_attempts (user_id, ip_address, success, reason) VALUES ($1, $2, $3, $4)',
+      [userId || null, clientIp(req), success, reason || null]
+    );
+  } catch (e) {
+    // 감사 로그는 본 기능을 막지 않는다
+  }
+}
+
+// ===================== 레이트리밋 =====================
+// 의존성 없이 슬라이딩 윈도우 방식으로 구현한다.
+const rateBuckets = new Map();
+
+function rateLimit({ windowMs, max, key = (req) => clientIp(req), message }) {
+  return (req, res, next) => {
+    const k = key(req);
+    const now = Date.now();
+    const hits = (rateBuckets.get(k) || []).filter((t) => now - t < windowMs);
+
+    if (hits.length >= max) {
+      const retryAfter = Math.ceil((windowMs - (now - hits[0])) / 1000);
+      res.set('Retry-After', String(retryAfter));
+      return res.status(429).json({
+        error: message || '요청이 너무 많습니다. 잠시 후 다시 시도하세요.',
+        code: 'RATE_LIMITED',
+        retryAfter,
+      });
+    }
+
+    hits.push(now);
+    rateBuckets.set(k, hits);
+    next();
+  };
+}
+
+// 정리: 주기적으로 오래된 버킷 제거 (메모리 누수 방지)
+setInterval(() => {
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  for (const [k, hits] of rateBuckets.entries()) {
+    const alive = hits.filter((t) => t > cutoff);
+    if (alive.length === 0) rateBuckets.delete(k);
+    else rateBuckets.set(k, alive);
+  }
+}, 10 * 60 * 1000).unref();
+
+// 인증 관련 엔드포인트는 IP 기준으로 더 엄격하게 제한한다.
+const loginRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: '로그인 시도가 너무 많습니다. 15분 후 다시 시도하세요.',
+});
+
+const apiRateLimit = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  message: '요청이 너무 많습니다. 잠시 후 다시 시도하세요.',
+});
 
 // Store message in DB
 async function storeMessage(roomId, userId, content) {
@@ -543,7 +727,14 @@ io.on('connection', (socket) => {
   socket.on('auth', async (data) => {
     const decoded = verifyToken(data && data.token);
     if (!decoded) {
-      socket.emit('auth_error', { message: 'Invalid token' });
+      socket.emit('auth_error', { message: '유효하지 않은 세션입니다.' });
+      socket.disconnect(true);
+      return;
+    }
+
+    // REST와 동일하게 DB 세션 상태를 확인한다 (로그아웃 반영)
+    if (!(await isSessionActive(decoded))) {
+      socket.emit('auth_error', { message: '세션이 종료되었습니다. 다시 로그인하세요.', code: 'SESSION_REVOKED' });
       socket.disconnect(true);
       return;
     }
@@ -783,6 +974,9 @@ function leaveCurrentRoom(socket) {
   socket.userName = null;
 }
 
+// REST API 전체에 일반 레이트리박 적용 (인증 엔드포인트는 더 엄격한 자체 제한을 사용)
+app.use('/api', apiRateLimit);
+
 // REST API endpoints
 app.get('/health', (req, res) => {
   res.json({ 
@@ -826,63 +1020,192 @@ app.post('/health/recheck', async (req, res) => {
   res.json({ database: dbHealthy, redis: redisHealthy });
 });
 
-app.post('/api/auth/token', (req, res) => {
-  const { userId, name } = req.body;
-  if (!userId || !name) {
-    return res.status(400).json({ error: 'userId and name required' });
-  }
-  const token = generateToken(userId, name);
-  res.json({ token });
-});
+// ===================== 인증 API =====================
+// 주의: 이전의 /api/auth/token 은 "이름만으로 토큰 발급"이라 사칭이 가능했다.
+// 운영 안전을 위해 회원가입(비밀번호)으로만 토큰을 발급한다.
 
-app.post('/api/auth/login', async (req, res) => {
-  const { userId, name } = req.body;
-  if (!userId || !name) {
-    return res.status(400).json({ error: 'userId and name required' });
+// 회원가입
+app.post('/api/auth/register', loginRateLimit, async (req, res) => {
+  const { userId, name, password, email } = req.body || {};
+
+  const idCheck = validateUserId(userId);
+  if (!idCheck.ok) return res.status(400).json({ error: idCheck.error, code: 'INVALID_USER_ID' });
+  const pwCheck = validatePassword(password);
+  if (!pwCheck.ok) return res.status(400).json({ error: pwCheck.error, code: 'WEAK_PASSWORD' });
+  if (typeof name !== 'string' || name.trim().length === 0 || name.length > 80) {
+    return res.status(400).json({ error: '이름을 1~80자로 입력하세요.', code: 'INVALID_NAME' });
   }
+
+  // 입력 검증을 통과한 뒤 DB 필요 (정책 검증은 DB 없이도 동작해야 함)
+  if (!dbAvailable) {
+    return res.status(503).json({ error: '데이터베이스를 사용할 수 없습니다.', code: 'DB_UNAVAILABLE' });
+  }
+
   try {
-    // 사용자 존재 확인 (있으면 토큰 재발급, 없으면 신규 생성)
-    const userExists = await pool.query(
-      'SELECT id, name, color FROM users WHERE id = $1',
-      [userId]
-    );
-
-    if (userExists.rows.length === 0) {
-      // 신규 사용자 생성 (기본 색상 할당)
-      const color = getRandomColor();
-      await pool.query(
-        'INSERT INTO users (id, name, color) VALUES ($1, $2, $3)',
-        [userId, name, color]
-      );
+    const existing = await pool.query('SELECT id FROM users WHERE id = $1', [idCheck.value]);
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ error: '이미 사용 중인 사용자 ID입니다.', code: 'USER_EXISTS' });
     }
 
-    // JWT 토큰 생성
-    const token = generateToken(userId, name);
-    res.json({ token, userId, name });
+    const passwordHash = await hashPassword(password);
+    const color = getRandomColor();
+    await pool.query(
+      `INSERT INTO users (id, name, color, password_hash, is_active, email)
+       VALUES ($1, $2, $3, $4, true, $5)`,
+      [idCheck.value, name.trim(), color, passwordHash, email || null]
+    );
+
+    await recordLoginAttempt(idCheck.value, req, true, 'register');
+    const token = await issueSession({ userId: idCheck.value, name: name.trim() }, req);
+    res.status(201).json({ token, userId: idCheck.value, name: name.trim() });
   } catch (e) {
-    console.error('Login error:', e);
-    res.status(500).json({ error: 'Database error' });
+    console.error('Register error:', e);
+    res.status(500).json({ error: '가입 처리 중 오류가 발생했습니다.' });
   }
 });
 
-app.get('/api/auth/me', async (req, res) => {
+// 로그인 (비밀번호 검증 필수)
+app.post('/api/auth/login', loginRateLimit, async (req, res) => {
+  const { userId, password } = req.body || {};
+
+  const idCheck = validateUserId(userId);
+  if (!idCheck.ok || typeof password !== 'string' || password.length === 0) {
+    // 계정 존재 여부를 노출하지 않는 동일한 메시지
+    return res.status(401).json({ error: '아이디 또는 비밀번호가 올바르지 않습니다.', code: 'INVALID_CREDENTIALS' });
+  }
+
+  if (!dbAvailable) {
+    return res.status(503).json({ error: '데이터베이스를 사용할 수 없습니다.', code: 'DB_UNAVAILABLE' });
+  }
+
   try {
-    const token = req.headers.authorization?.replace('Bearer ', '');
-    if (!token) return res.status(401).json({ error: 'No token provided' });
-
-    const decoded = verifyToken(token);
-    if (!decoded) return res.status(401).json({ error: 'Invalid token' });
-
-    const user = await pool.query(
-      'SELECT id, name, color FROM users WHERE id = $1',
-      [decoded.userId]
+    const result = await pool.query(
+      'SELECT id, name, color, password_hash, is_active, locked_until, failed_logins FROM users WHERE id = $1',
+      [idCheck.value]
     );
 
-    if (user.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    const user = result.rows[0];
 
-    res.json({ user: user.rows[0] });
+    // 잠금 계정 확인
+    if (user && user.locked_until && new Date(user.locked_until) > new Date()) {
+      const mins = Math.max(1, Math.ceil((new Date(user.locked_until) - Date.now()) / 60000));
+      await recordLoginAttempt(idCheck.value, req, false, 'locked');
+      return res.status(423).json({ error: `계정이 잠겼습니다. ${mins}분 후 다시 시도하세요.`, code: 'ACCOUNT_LOCKED' });
+    }
+
+    // 계정이 없으면 더미 해시 검증으로 응답 시간을 맞춘다
+    if (!user) {
+      await dummyVerify();
+      await recordLoginAttempt(idCheck.value, req, false, 'no_such_user');
+      return res.status(401).json({ error: '아이디 또는 비밀번호가 올바르지 않습니다.', code: 'INVALID_CREDENTIALS' });
+    }
+
+    // 비밀번호가 설정되지 않은 계정(레거시 데이터)은 로그인 불가
+    if (!user.password_hash) {
+      await recordLoginAttempt(idCheck.value, req, false, 'no_password_set');
+      return res.status(403).json({ error: '비밀번호가 설정되지 않은 계정입니다. 관리자에게 문의하세요.', code: 'NO_PASSWORD' });
+    }
+
+    const valid = await verifyPassword(password, user.password_hash);
+    if (!valid) {
+      const failed = (user.failed_logins || 0) + 1;
+      // 5회 연속 실패 시 15분 잠금
+      if (failed >= 5) {
+        await pool.query(
+          'UPDATE users SET failed_logins = $1, locked_until = NOW() + INTERVAL \'15 minutes\' WHERE id = $2',
+          [failed, user.id]
+        );
+        await recordLoginAttempt(user.id, req, false, 'too_many_failures');
+        return res.status(423).json({ error: '로그인 실패가 5회 누적되어 15분간 잠겼습니다.', code: 'ACCOUNT_LOCKED' });
+      }
+      await pool.query('UPDATE users SET failed_logins = $1 WHERE id = $2', [failed, user.id]);
+      await recordLoginAttempt(user.id, req, false, 'bad_password');
+      return res.status(401).json({ error: '아이디 또는 비밀번호가 올바르지 않습니다.', code: 'INVALID_CREDENTIALS' });
+    }
+
+    if (user.is_active === false) {
+      await recordLoginAttempt(user.id, req, false, 'inactive');
+      return res.status(403).json({ error: '비활성화된 계정입니다. 관리자에게 문의하세요.', code: 'ACCOUNT_DISABLED' });
+    }
+
+    // 성공: 실패 카운트 초기화 + 세션 발급
+    await pool.query(
+      'UPDATE users SET failed_logins = 0, locked_until = NULL, last_login_at = NOW(), status = $1 WHERE id = $2',
+      ['online', user.id]
+    );
+    await recordLoginAttempt(user.id, req, true, 'login');
+
+    const token = await issueSession({ userId: user.id, name: user.name }, req);
+    res.json({ token, userId: user.id, name: user.name, color: user.color });
   } catch (e) {
-    res.status(401).json({ error: 'Token verification failed' });
+    console.error('Login error:', e);
+    res.status(500).json({ error: '로그인 처리 중 오류가 발생했습니다.' });
+  }
+});
+
+// 로그아웃 (현재 세션 폐기)
+app.post('/api/auth/logout', requireAuth, requireDb, async (req, res) => {
+  try {
+    const token = extractToken(req);
+    const decoded = verifyToken(token);
+    if (decoded && decoded.jti) {
+      await pool.query(
+        'UPDATE auth_sessions SET revoked_at = NOW() WHERE jti = $1 AND revoked_at IS NULL',
+        [decoded.jti]
+      );
+    }
+    if (req.user) {
+      await pool.query('UPDATE users SET status = $1 WHERE id = $2', ['offline', req.user.id]).catch(() => {});
+    }
+    res.json({ success: true });
+  } catch (e) {
+    console.error('Logout error:', e);
+    res.status(500).json({ error: '로그아웃 처리 중 오류가 발생했습니다.' });
+  }
+});
+
+// 비밀번호 변경 (현재 비밀번호 필요)
+app.post('/api/auth/change-password', requireAuth, requireDb, async (req, res) => {
+  const { currentPassword, newPassword } = req.body || {};
+  const pwCheck = validatePassword(newPassword);
+  if (!pwCheck.ok) return res.status(400).json({ error: pwCheck.error, code: 'WEAK_PASSWORD' });
+
+  try {
+    const result = await pool.query('SELECT password_hash FROM users WHERE id = $1', [req.user.id]);
+    const user = result.rows[0];
+    if (!user || !user.password_hash) {
+      return res.status(403).json({ error: '비밀번호가 설정되지 않은 계정입니다.', code: 'NO_PASSWORD' });
+    }
+    const valid = await verifyPassword(currentPassword || '', user.password_hash);
+    if (!valid) {
+      return res.status(401).json({ error: '현재 비밀번호가 올바르지 않습니다.', code: 'INVALID_CREDENTIALS' });
+    }
+    const newHash = await hashPassword(newPassword);
+    await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [newHash, req.user.id]);
+    // 비밀번호 변경 시 기존 세션 모두 폐기
+    await pool.query('UPDATE auth_sessions SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL', [req.user.id]);
+    res.json({ success: true, message: '비밀번호가 변경되었습니다. 다시 로그인하세요.' });
+  } catch (e) {
+    console.error('Change password error:', e);
+    res.status(500).json({ error: '비밀번호 변경 중 오류가 발생했습니다.' });
+  }
+});
+
+// 현재 사용자 조회 (requireAuth로 세션까지 검증하므로 로그아웃 즉시 401)
+app.get('/api/auth/me', requireAuth, requireDb, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, name, color, email, status, last_login_at, created_at
+       FROM users WHERE id = $1`,
+      [req.user.id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: '사용자를 찾을 수 없습니다.', code: 'USER_NOT_FOUND' });
+    }
+    res.json({ user: result.rows[0] });
+  } catch (e) {
+    console.error('/me error:', e);
+    res.status(500).json({ error: '사용자 정보를 조회하지 못했습니다.' });
   }
 });
 
@@ -936,6 +1259,31 @@ function oauthClient() {
   return _oauth2Client;
 }
 
+// OAuth state HMAC 서명/검증 (10분 만료)
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+
+function signOAuthState(payload) {
+  const body = Buffer.from(JSON.stringify({ ...payload, exp: Date.now() + OAUTH_STATE_TTL_MS })).toString('base64url');
+  const sig = crypto.createHmac('sha256', JWT_SECRET).update(body).digest('base64url');
+  return body + '.' + sig;
+}
+
+function verifyOAuthState(state) {
+  if (typeof state !== 'string' || !state.includes('.')) return null;
+  const [body, sig] = state.split('.');
+  const expected = crypto.createHmac('sha256', JWT_SECRET).update(body).digest('base64url');
+  const a = Buffer.from(sig || '');
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  try {
+    const data = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    if (!data.exp || data.exp < Date.now()) return null;
+    return data;
+  } catch (_) {
+    return null;
+  }
+}
+
 // OAuth 미설정 상태에서는 명확히 503으로 알린다 (무음 실패 방지)
 app.use('/api/auth/google', (req, res, next) => {
   if (!googleEnabled) {
@@ -958,15 +1306,18 @@ app.use('/api/calendar', (req, res, next) => {
 });
 
 // Google OAuth2 URL 생성
-app.get('/api/auth/google/url', (req, res) => {
+app.get('/api/auth/google/url', requireAuth, (req, res) => {
   const scopes = [
     'https://www.googleapis.com/auth/calendar',
     'https://www.googleapis.com/auth/calendar.events'
   ];
+  // state는 서명해야 한다. 평문 JSON을 쓰면 사용자가 다른 userId로 위조해
+  // OAuth 토큰이 다른 계정에 연결될 수 있다.
+  const stateToken = signOAuthState({ userId: req.user.id });
   const url = oauthClient().generateAuthUrl({
     access_type: 'offline',
     scope: scopes,
-    state: JSON.stringify({ userId: req.query.userId || 'anonymous' })
+    state: stateToken,
   });
   res.json({ url });
 });
@@ -981,7 +1332,10 @@ app.get('/api/auth/google/callback', async (req, res) => {
     oauthClient().setCredentials(tokens);
 
     // 상태 복원 및 사용자 연결
-    const stateData = JSON.parse(state || '{}');
+    const stateData = verifyOAuthState(state);
+    if (!stateData || !stateData.userId) {
+      return res.status(400).send('Invalid OAuth state');
+    }
     const userId = stateData.userId;
 
     // 토큰 DB에 저장 (실제 구현 시 암호화 필요)
@@ -1169,60 +1523,69 @@ app.post('/api/meetings/:meetingId/calendar', async (req, res) => {
 app.use('/api/organizations', requireAuth, requireDb);
 
 // 조직 생성
-app.post('/api/organizations', async (req, res) => {
+app.post('/api/organizations', requireAuth, requireDb, async (req, res) => {
   try {
-    const { userId, name, slug, description } = req.body;
-    if (!userId || !name || !slug) {
-      return res.status(400).json({ error: 'userId, name, slug required' });
+    const { name, slug, description } = req.body || {};
+    const userId = req.user.id; // 소유자는 토큰의 사용자 (스푸핑 방지)
+
+    if (!name || typeof name !== 'string' || name.trim().length === 0) {
+      return res.status(400).json({ error: '조직 이름을 입력하세요.', code: 'NAME_REQUIRED' });
+    }
+    if (name.length > 120) {
+      return res.status(400).json({ error: '조직 이름이 너무 깁니다.', code: 'NAME_TOO_LONG' });
+    }
+    const cleanSlug = typeof slug === 'string' ? slug.trim().toLowerCase() : '';
+    if (!/^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$/.test(cleanSlug)) {
+      return res.status(400).json({
+        error: '슬러그는 영문 소문자/숫자/하이픈 3~50자로 지정하세요.',
+        code: 'INVALID_SLUG',
+      });
     }
 
-    // 슬러그 중복 확인
-    const existing = await pool.query('SELECT id FROM organizations WHERE slug = $1', [slug]);
-    if (existing.rows.length > 0) {
-      return res.status(409).json({ error: 'Slug already exists' });
-    }
-
-    // 조직 생성 + 소유자 추가 (트랜잭션)
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      
+
+      // 동시 생성 경쟁 조건까지 막기 위해 DB unique 위반을 409로 매핑
       const orgResult = await client.query(
-        'INSERT INTO organizations (id, name, slug, description) VALUES ($1, $2, $3, $4) RETURNING *',
-        [require('uuid').v4(), name, slug, description || '']
+        `INSERT INTO organizations (id, name, slug, description)
+         VALUES ($1, $2, $3, $4) RETURNING *`,
+        [uuidv4(), name.trim(), cleanSlug, description || '']
       );
       const org = orgResult.rows[0];
 
-      // 소유자 멤버십 추가
       await client.query(
-        'INSERT INTO organization_members (organization_id, user_id, role) VALUES ($1, $2, $3)',
-        [org.id, userId, 'owner']
+        `INSERT INTO organization_members (organization_id, user_id, role)
+         VALUES ($1, $2, 'owner')`,
+        [org.id, userId]
       );
-
-      // 감사 로그
       await client.query(
-        'INSERT INTO audit_logs (organization_id, user_id, action, resource_type, resource_id) VALUES ($1, $2, $3, $4, $5)',
-        [org.id, userId, 'create', 'organization', org.id]
+        `INSERT INTO audit_logs (organization_id, user_id, action, resource_type, resource_id)
+         VALUES ($1, $2, 'create', 'organization', $3)`,
+        [org.id, userId, org.id]
       );
 
       await client.query('COMMIT');
-      res.json({ organization: org });
+      res.status(201).json({ organization: org });
     } catch (e) {
       await client.query('ROLLBACK');
+      // 23505 = unique_violation
+      if (e.code === '23505') {
+        return res.status(409).json({ error: '이미 사용 중인 슬러그입니다.', code: 'SLUG_TAKEN' });
+      }
       throw e;
     } finally {
       client.release();
     }
   } catch (e) {
     console.error('Create organization error:', e);
-    res.status(500).json({ error: 'Failed to create organization' });
+    res.status(500).json({ error: '조직 생성에 실패했습니다.' });
   }
 });
 
-// 조직 목록 조회 (사용자 소속)
 app.get('/api/organizations', async (req, res) => {
   try {
-    const { userId } = req.query;
+    const userId = req.user.id;
     if (!userId) return res.status(400).json({ error: 'userId required' });
 
     const result = await pool.query(`
@@ -1244,7 +1607,7 @@ app.get('/api/organizations', async (req, res) => {
 app.get('/api/organizations/:orgId', async (req, res) => {
   try {
     const { orgId } = req.params;
-    const { userId } = req.query;
+    const userId = req.user.id;
 
     const orgResult = await pool.query('SELECT * FROM organizations WHERE id = $1', [orgId]);
     if (orgResult.rows.length === 0) {
@@ -1343,7 +1706,7 @@ app.patch('/api/organizations/:orgId', async (req, res) => {
 app.delete('/api/organizations/:orgId', async (req, res) => {
   try {
     const { orgId } = req.params;
-    const { userId } = req.query;
+    const userId = req.user.id;
     if (!userId) return res.status(400).json({ error: 'userId required' });
 
     // 권한 확인
@@ -1371,83 +1734,108 @@ app.delete('/api/organizations/:orgId', async (req, res) => {
 });
 
 // 조직 멤버 초대
-app.post('/api/organizations/:orgId/invites', async (req, res) => {
+app.post('/api/organizations/:orgId/invites', requireAuth, requireDb, async (req, res) => {
   try {
     const { orgId } = req.params;
-    const { userId, email, role } = req.body;
-    if (!userId || !email) return res.status(400).json({ error: 'userId and email required' });
+    const { email, role } = req.body || {};
+    const userId = req.user.id; // 토큰에서만取得 (스푸핑 방지)
 
-    // 권한 확인
+    if (!email || typeof email !== 'string') {
+      return res.status(400).json({ error: '이메일을 입력하세요.', code: 'EMAIL_REQUIRED' });
+    }
+    const allowedRoles = ['admin', 'member', 'viewer'];
+    const inviteRole = allowedRoles.includes(role) ? role : 'member';
+
     const roleResult = await pool.query(
       'SELECT role FROM organization_members WHERE organization_id = $1 AND user_id = $2',
       [orgId, userId]
     );
-    const userRole = roleResult.rows[0]?.role;
+    const userRole = roleResult.rows[0] && roleResult.rows[0].role;
     if (!userRole || !['owner', 'admin'].includes(userRole)) {
-      return res.status(403).json({ error: 'Insufficient permissions' });
+      return res.status(403).json({ error: '초대 권한이 없습니다.', code: 'FORBIDDEN' });
     }
 
-    const token = require('crypto').randomBytes(32).toString('hex');
+    const token = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7일
 
     await pool.query(
-      'INSERT INTO organization_invites (organization_id, email, role, token, invited_by, expires_at) VALUES ($1, $2, $3, $4, $5, $6)',
-      [orgId, email, role || 'member', token, userId, expiresAt]
+      `INSERT INTO organization_invites (organization_id, email, role, token, invited_by, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [orgId, email.trim(), inviteRole, token, userId, expiresAt]
     );
 
-    const inviteUrl = `${process.env.FRONTEND_URL || 'http://localhost:8082'}/org/invite/${token}`;
+    await pool.query(
+      `INSERT INTO audit_logs (organization_id, user_id, action, resource_type, resource_id, metadata)
+       VALUES ($1, $2, 'invite', 'organization', $3, $4)`,
+      [orgId, userId, orgId, JSON.stringify({ email, role: inviteRole })]
+    );
 
-    res.json({ invite: { email, role, token, expiresAt, inviteUrl } });
+    const base = process.env.FRONTEND_URL || '';
+    res.json({
+      invite: {
+        email,
+        role: inviteRole,
+        token,
+        expiresAt,
+        invitePath: '/?invite=' + token,
+        inviteUrl: base ? base + '/?invite=' + token : '',
+      },
+    });
   } catch (e) {
     console.error('Create invite error:', e);
-    res.status(500).json({ error: 'Failed to create invite' });
+    res.status(500).json({ error: '초대를 만들지 못했습니다.' });
   }
 });
 
 // 초대 수락
-app.post('/api/organizations/invites/:token/accept', async (req, res) => {
+// 초대 수락
+// 주의: 인증 없이 "아무 userId로나" 계정을 만들 수 있으면 초대 우회로가 되므로
+// 반드시 requireAuth를 거치고, 토큰의 userId만 사용한다.
+app.post('/api/organizations/invites/:token/accept', requireAuth, requireDb, async (req, res) => {
   try {
     const { token } = req.params;
-    const { userId, name } = req.body;
-    if (!userId) return res.status(400).json({ error: 'userId required' });
 
     const inviteResult = await pool.query(
-      'SELECT * FROM organization_invites WHERE token = $1 AND expires_at > NOW() AND accepted_at IS NULL',
+      `SELECT * FROM organization_invites
+       WHERE token = $1 AND expires_at > NOW() AND accepted_at IS NULL`,
       [token]
     );
     if (inviteResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Invalid or expired invite' });
+      return res.status(404).json({ error: '유효하지 않거나 만료된 초대입니다.', code: 'INVALID_INVITE' });
     }
     const invite = inviteResult.rows[0];
+    const userId = req.user.id;
+
+    // 이미 다른 멤버이면 충돌 방지
+    const existing = await pool.query(
+      'SELECT role FROM organization_members WHERE organization_id = $1 AND user_id = $2',
+      [invite.organization_id, userId]
+    );
+    if (existing.rows.length > 0) {
+      return res.status(409).json({ error: '이미 이 조직의 멤버입니다.', code: 'ALREADY_MEMBER' });
+    }
 
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
 
-      // 사용자 생성/확인
-      let userResult = await client.query('SELECT id FROM users WHERE id = $1', [userId]);
-      if (userResult.rows.length === 0) {
-        const color = '#4ECDC4';
-        await client.query('INSERT INTO users (id, name, color) VALUES ($1, $2, $3)', [userId, name || 'User', color]);
-      }
-
-      // 멤버십 추가
       await client.query(
-        'INSERT INTO organization_members (organization_id, user_id, role) VALUES ($1, $2, $3) ON CONFLICT (organization_id, user_id) DO UPDATE SET role = EXCLUDED.role',
+        `INSERT INTO organization_members (organization_id, user_id, role)
+         VALUES ($1, $2, $3)`,
         [invite.organization_id, userId, invite.role]
       );
-
-      // 초대 수락 처리
-      await client.query('UPDATE organization_invites SET accepted_at = NOW() WHERE token = $1', [token]);
-
-      // 감사 로그
       await client.query(
-        'INSERT INTO audit_logs (organization_id, user_id, action, resource_type, resource_id) VALUES ($1, $2, $3, $4, $5)',
-        [invite.organization_id, userId, 'accept_invite', 'organization', invite.organization_id]
+        'UPDATE organization_invites SET accepted_at = NOW() WHERE token = $1',
+        [token]
+      );
+      await client.query(
+        `INSERT INTO audit_logs (organization_id, user_id, action, resource_type, resource_id)
+         VALUES ($1, $2, 'accept_invite', 'organization', $3)`,
+        [invite.organization_id, userId, invite.organization_id]
       );
 
       await client.query('COMMIT');
-      res.json({ success: true, organizationId: invite.organization_id });
+      res.json({ success: true, organizationId: invite.organization_id, role: invite.role });
     } catch (e) {
       await client.query('ROLLBACK');
       throw e;
@@ -1456,49 +1844,61 @@ app.post('/api/organizations/invites/:token/accept', async (req, res) => {
     }
   } catch (e) {
     console.error('Accept invite error:', e);
-    res.status(500).json({ error: 'Failed to accept invite' });
+    res.status(500).json({ error: '초대 수락 처리에 실패했습니다.' });
   }
 });
 
-// 멤버 역할 변경 (owner/admin만)
-app.patch('/api/organizations/:orgId/members/:memberId', async (req, res) => {
+app.patch('/api/organizations/:orgId/members/:memberId', requireAuth, requireDb, async (req, res) => {
   try {
     const { orgId, memberId } = req.params;
-    const { userId, role } = req.body;
-    if (!userId || !role) return res.status(400).json({ error: 'userId and role required' });
+    const { role } = req.body || {};
+    const userId = req.user.id; // 토큰에서만 취득
 
-    // 요청자 권한 확인
+    const VALID = ['owner', 'admin', 'member', 'viewer'];
+    if (!role || !VALID.includes(role)) {
+      return res.status(400).json({ error: '유효하지 않은 역할입니다.', code: 'INVALID_ROLE' });
+    }
+
     const requesterRoleResult = await pool.query(
       'SELECT role FROM organization_members WHERE organization_id = $1 AND user_id = $2',
       [orgId, userId]
     );
-    const requesterRole = requesterRoleResult.rows[0]?.role;
+    const requesterRole = requesterRoleResult.rows[0] && requesterRoleResult.rows[0].role;
     if (!requesterRole || !['owner', 'admin'].includes(requesterRole)) {
-      return res.status(403).json({ error: 'Insufficient permissions' });
+      return res.status(403).json({ error: '권한이 없습니다.', code: 'FORBIDDEN' });
     }
 
-    // 대상 멤버 확인
     const targetResult = await pool.query(
       'SELECT role FROM organization_members WHERE organization_id = $1 AND user_id = $2',
       [orgId, memberId]
     );
     if (targetResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Member not found' });
+      return res.status(404).json({ error: '멤버를 찾을 수 없습니다.', code: 'MEMBER_NOT_FOUND' });
     }
     const targetRole = targetResult.rows[0].role;
 
-    // owner는 owner만 변경 가능, admin은 member/viewer만 변경 가능
-    if (targetRole === 'owner' && requesterRole !== 'owner') {
-      return res.status(403).json({ error: 'Cannot modify owner role' });
+    // 계정 보호: requesterRole이 DB 기준이므로 자기 강등 후 복구 불가 문제도 함께 다룬다.
+    // - admin은 member/viewer만 관리할 수 있다
+    // - admin/owner 지정은 owner만 가능하다
+    if (requesterRole !== 'owner' && ['admin', 'owner'].includes(targetRole)) {
+      return res.status(403).json({ error: 'admin/owner 멤버는 소유자만 변경할 수 있습니다.', code: 'FORBIDDEN' });
     }
-    if (targetRole === 'admin' && requesterRole !== 'owner') {
-      return res.status(403).json({ error: 'Cannot modify admin role' });
+    if (requesterRole !== 'owner' && ['admin', 'owner'].includes(role)) {
+      return res.status(403).json({ error: 'admin/owner 역할은 소유자만 부여할 수 있습니다.', code: 'FORBIDDEN' });
     }
-    if (role === 'owner' && requesterRole !== 'owner') {
-      return res.status(403).json({ error: 'Cannot assign owner role' });
-    }
-    if (role === 'admin' && requesterRole !== 'owner') {
-      return res.status(403).json({ error: 'Cannot assign admin role' });
+
+    // 마지막 owner를 제거/강등해 조직에 관리자가 없어지는 것을 방지한다
+    if (targetRole === 'owner' && role !== 'owner') {
+      const owners = await pool.query(
+        "SELECT COUNT(*) AS c FROM organization_members WHERE organization_id = $1 AND role = 'owner'",
+        [orgId]
+      );
+      if (owners.rows[0].c <= 1) {
+        return res.status(409).json({
+          error: '조직에는 최소 한 명의 소유자가 있어야 합니다.',
+          code: 'LAST_OWNER',
+        });
+      }
     }
 
     await pool.query(
@@ -1506,24 +1906,23 @@ app.patch('/api/organizations/:orgId/members/:memberId', async (req, res) => {
       [role, orgId, memberId]
     );
 
-    // 감사 로그
     await pool.query(
-      'INSERT INTO audit_logs (organization_id, user_id, action, resource_type, resource_id, metadata) VALUES ($1, $2, $3, $4, $5, $6)',
-      [orgId, userId, 'update_role', 'member', memberId, JSON.stringify({ oldRole: targetRole, newRole: role })]
+      `INSERT INTO audit_logs (organization_id, user_id, action, resource_type, resource_id, metadata)
+       VALUES ($1, $2, 'update_role', 'member', $3, $4)`,
+      [orgId, userId, memberId, JSON.stringify({ oldRole: targetRole, newRole: role })]
     );
 
-    res.json({ success: true });
+    res.json({ success: true, role });
   } catch (e) {
     console.error('Update member role error:', e);
-    res.status(500).json({ error: 'Failed to update member role' });
+    res.status(500).json({ error: '역할 변경에 실패했습니다.' });
   }
 });
 
-// 멤버 삭제 (owner/admin만, 자기 자신은 삭제 불가)
 app.delete('/api/organizations/:orgId/members/:memberId', async (req, res) => {
   try {
     const { orgId, memberId } = req.params;
-    const { userId } = req.query;
+    const userId = req.user.id;
     if (!userId) return res.status(400).json({ error: 'userId required' });
     if (userId === memberId) return res.status(400).json({ error: 'Cannot remove yourself' });
 
@@ -1602,7 +2001,7 @@ app.post('/api/organizations/:orgId/rooms', async (req, res) => {
 app.delete('/api/organizations/:orgId/rooms/:roomId', async (req, res) => {
   try {
     const { orgId, roomId } = req.params;
-    const { userId } = req.query;
+    const userId = req.user.id;
     if (!userId) return res.status(400).json({ error: 'userId required' });
 
     const roleResult = await pool.query(
@@ -2260,7 +2659,22 @@ app.get('/api/analytics/audit', async (req, res) => {
 });
 
 // 메트릭 엔드포인트 (Prometheus용)
+// Prometheus 스크랩용. 기본은 인증 없음(내부망 전제)이나 METRICS_TOKEN을 두면
+// Bearer 인증을 요구하며, 그 밖의 곳에서는 404로 숨긴다.
+const METRICS_TOKEN = process.env.METRICS_TOKEN || '';
+
 app.get('/metrics', async (req, res) => {
+  if (METRICS_TOKEN) {
+    const provided = (req.headers.authorization || '').replace('Bearer ', '').trim();
+    const a = Buffer.from(provided);
+    const b = Buffer.from(METRICS_TOKEN);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+      return res.status(401).type('text/plain').send('# unauthorized\n');
+    }
+  } else if (process.env.NODE_ENV === 'production' && process.env.ALLOW_PUBLIC_METRICS !== 'true') {
+    // 운영 환경에서 토큰도 공개도 모두 미설정되면 외부 노출을 막는다
+    return res.status(404).type('text/plain').send('not found\n');
+  }
   try {
     if (!dbAvailable) {
       return res.status(503).type('text/plain').send('# Database unavailable\n');

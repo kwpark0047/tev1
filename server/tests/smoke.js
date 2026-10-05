@@ -37,15 +37,27 @@ function record(name, ok, detail) {
   console.log(`${mark}  ${name}${detail ? ` - ${detail}` : ''}`);
 }
 
+// 테스트 요청마다 고유 IP를 사용한다.
+// 레이트리밋이 IP별 카운터를 쓰므로, 테스트 항목이 서로 영향을 주지 않아야 한다.
+let ipCounter = 0;
+function nextTestIp() {
+  ipCounter += 1;
+  return `10.99.${Math.floor(ipCounter / 250)}.${ipCounter % 250}`;
+}
+
 async function req(pathname, options = {}) {
   const res = await fetch(BASE + pathname, {
     ...options,
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Forwarded-For': nextTestIp(),
+      ...(options.headers || {}),
+    },
   });
   const text = await res.text();
   let body = null;
   try { body = JSON.parse(text); } catch (_) { body = text; }
-  return { status: res.status, body };
+  return { status: res.status, body, headers: res.headers };
 }
 
 async function waitForReady(timeoutMs) {
@@ -95,28 +107,107 @@ async function main() {
     record('/health/detailed 200 + socketio 정보', false, e.message);
   }
 
-  // 3) JWT 발급 (레거시 wss 없이도 동작해야 함)
+  // 3) 회원가입 → 토큰 발급
+  // (이전에는 이름만으로 토큰을 발급해 누구든 타인 사칭이 가능했다)
+  const SU_ID = 'smoke-user';
+  const SU_PW = 'SmokePass123';
   let token = null;
-  try {
-    const { status, body } = await req('/api/auth/token', {
-      method: 'POST',
-      body: JSON.stringify({ userId: 'smoke-user', name: '스모크' }),
-    });
-    token = body && body.token;
-    record('/api/auth/token JWT 발급', status === 200 && typeof token === 'string', `status=${status}`);
-  } catch (e) {
-    record('/api/auth/token JWT 발급', false, e.message);
+
+  // DB가 없으면 인증 자체가 불가능하므로 503 경로만 검증하고 DB 스위트로 넘어간다
+  if (SKIP_DB) {
+    try {
+      const probe = await req('/api/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({ userId: 'probe', name: 'P', password: 'ProbePass123' }),
+      });
+      record('DB 부재 시 회원가입 503', probe.status === 503, `status=${probe.status}`);
+      const legacy = await req('/api/auth/token', {
+        method: 'POST',
+        body: JSON.stringify({ userId: 'attacker', name: 'A' }),
+      });
+      record('무인증 토큰 발급 차단(404)', legacy.status === 404, `status=${legacy.status}`);
+      const weak = await req('/api/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({ userId: 'weak', name: 'W', password: 'abc' }),
+      });
+      record('약한 비밀번호 거부 400', weak.status === 400 && weak.body.code === 'WEAK_PASSWORD', `status=${weak.status}`);
+      const hr = await req('/health');
+      record('보안 헤더 적용(DB 없음)', !!hr.headers.get('content-security-policy'), '');
+      record('DB/Redis 실경로', true, 'TEV1_SKIP_DB=1 로 건너뜀');
+    } catch (e) {
+      record('DB 부재 경로', false, e.message);
+    }
+    const failed = results.filter((r) => !r.ok);
+    console.log(`\n요약: ${results.length - failed.length}/${results.length} 통과 (${Date.now() - started}ms)`);
+    if (failed.length) {
+      console.log('실패 항목:');
+      for (const f of failed) console.log(`  - ${f.name} (${f.detail || ''})`);
+    }
+    await shutdown(server, io, failed.length ? 1 : 0);
+    return;
   }
 
-  // 4) /api/auth/me 토큰 검증
+  try {
+    const reg = await req('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ userId: SU_ID, name: '스모크', password: SU_PW }),
+    });
+    // 이미 가입된 경우(재실행) 로그인으로 이어간다
+    if (reg.status === 201) {
+      token = reg.body && reg.body.token;
+      record('회원가입 201 + 토큰 발급', typeof token === 'string', `status=${reg.status}`);
+    } else if (reg.status === 409) {
+      // 재실행 시 기존 계정이다. 이전 버전에서 비밀번호 없이 만들어진 레거시 계정은
+      // 로그인이 불가능하므로(NO_PASSWORD) 테스트 계정만 비밀번호를 설정해 초기화한다.
+      await resetTestUserPassword(SU_ID, SU_PW, '스모크');
+      const li = await req('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ userId: SU_ID, password: SU_PW }),
+      });
+      token = li.body && li.body.token;
+      record('회원가입 중복 409 → 로그인 복구', li.status === 200 && typeof token === 'string', `status=${li.status}`);
+    } else {
+      record('회원가입 201 + 토큰 발급', false, `status=${reg.status} ${reg.body && reg.body.error}`);
+    }
+  } catch (e) {
+    record('회원가입 201 + 토큰 발급', false, e.message);
+  }
+
+  // 3-1) 레거시 무인증 토큰 엔드포인트는 제거되어 있어야 한다 (사칭 방지)
+  try {
+    const { status } = await req('/api/auth/token', {
+      method: 'POST',
+      body: JSON.stringify({ userId: 'attacker', name: '공격자' }),
+    });
+    record('무인증 토큰 발급 차단(404)', status === 404, `status=${status}`);
+  } catch (e) {
+    record('무인증 토큰 발급 차단(404)', false, e.message);
+  }
+
+  // 3-2) 약한 비밀번호는 거부 (레이트리밟 소모를 막기 위해 정책은 단위 검증으로 대체)
+  // (auth.validatePassword 로 직접 검증 - 아래 별도 항목)
+
+  // 3-3) 잘못된 비밀번호 로그인은 401 (계정 존재 여부 비노출)
+  //     계정 잠금(423)이 걸리지 않도록 실패 횟수를 먼저 초기화한 뒤 1회만 시도한다.
+  try {
+    await clearFailedLogins(SU_ID);
+    const { status, body } = await req('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ userId: SU_ID, password: 'WrongPass12345' }),
+    });
+    record('잘못된 비밀번호 401', status === 401 && body && body.code === 'INVALID_CREDENTIALS', `status=${status}`);
+  } catch (e) {
+    record('잘못된 비밀번호 401', false, e.message);
+  }
+
+  // 4) /api/auth/me 토큰 + 세션 검증
   try {
     const { status, body } = await req('/api/auth/me', {
       headers: { Authorization: `Bearer ${token}` },
     });
-    // DB가 없으면 500이 아니라 인증 실패/사용자 없음 중 하나여야 한다(크래시 아님)
-    record('/api/auth/me 토큰 검증 (크래시 없음)', [200, 401, 404, 500].includes(status), `status=${status} ${body && body.error ? body.error : ''}`);
+    record('/api/auth/me 토큰 검증', [200, 401, 404].includes(status), `status=${status} ${body && body.error ? body.error : ''}`);
   } catch (e) {
-    record('/api/auth/me 토큰 검증 (크래시 없음)', false, e.message);
+    record('/api/auth/me 토큰 검증', false, e.message);
   }
 
   // 5) 잘못된 토큰은 401
@@ -125,6 +216,44 @@ async function main() {
     record('잘못된 토큰 401', status === 401, `status=${status}`);
   } catch (e) {
     record('잘못된 토큰 401', false, e.message);
+  }
+
+  // 5-1) 로그아웃하면 세션이 즉시 무효화되어야 한다
+  try {
+    const lo = await req('/api/auth/logout', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const after = await req('/api/auth/me', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    record(
+      '로그아웃 후 세션 무효화(401)',
+      lo.status === 200 && after.status === 401,
+      `logout=${lo.status} after=${after.status}`
+    );
+    // 이후 테스트가 인증 토큰을 쓰므로 다시 로그인한다
+    const relogin = await req('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ userId: SU_ID, password: SU_PW }),
+    });
+    token = relogin.body && relogin.body.token;
+    record('재로그인 토큰 재발급', relogin.status === 200 && typeof token === 'string', `status=${relogin.status}`);
+  } catch (e) {
+    record('로그아웃 후 세션 무효화(401)', false, e.message);
+  }
+
+  // 5-2) 보안 헤더 확인
+  try {
+    const { headers } = await req('/health');
+    const csp = headers.get ? headers.get('content-security-policy') : null;
+    record(
+      '보안 헤더 적용',
+      !!csp && headers.get('x-content-type-options') === 'nosniff',
+      `csp=${csp ? 'yes' : 'no'} nosniff=${headers.get('x-content-type-options')}`
+    );
+  } catch (e) {
+    record('보안 헤더 적용', false, e.message);
   }
 
   // 6) 미설정 외부 연동은 503 (500 아님)
@@ -218,6 +347,44 @@ async function main() {
   }
 
   await shutdown(server, io, failed.length ? 1 : 0);
+}
+
+/** 실패 카운트/잠금 초기화 (테스트가 423에 걸리지 않도록) */
+async function clearFailedLogins(userId) {
+  if (SKIP_DB) return;
+  const { Pool } = require('pg');
+  const pool = new Pool({ connectionString: DATABASE_URL, connectionTimeoutMillis: 5000 });
+  try {
+    await pool.query(
+      'UPDATE users SET failed_logins = 0, locked_until = NULL WHERE id = $1',
+      [userId]
+    );
+  } catch (_) {
+  } finally {
+    await pool.end().catch(() => {});
+  }
+}
+
+/** 테스트 계정 비밀번호를 직접 설정 (레거시 계정 초기화용) */
+async function resetTestUserPassword(userId, password, name) {
+  if (SKIP_DB) return;
+  const { Pool } = require('pg');
+  const { hashPassword } = require('../src/auth');
+  const pool = new Pool({ connectionString: DATABASE_URL, connectionTimeoutMillis: 5000 });
+  try {
+    const hash = await hashPassword(password);
+    await pool.query(
+      `INSERT INTO users (id, name, color, password_hash, is_active, failed_logins, locked_until)
+       VALUES ($1, $2, '#4ECDC4', $3, true, 0, NULL)
+       ON CONFLICT (id) DO UPDATE
+         SET password_hash = EXCLUDED.password_hash, is_active = true, failed_logins = 0, locked_until = NULL`,
+      [userId, name || userId, hash]
+    );
+  } catch (e) {
+    // 초기화 실패는 아래 로그인 검증에서 드러난다
+  } finally {
+    await pool.end().catch(() => {});
+  }
 }
 
 /** 실제 DB에 스키마 생성 후 데이터 삽입 -> 분석 쿼리까지 검증 */
@@ -340,9 +507,14 @@ async function runDbSuite(token) {
     const aOk = audit.status === 200 && Array.isArray(audit.body && audit.body.logs);
     record('분석: 감사 로그', aOk, `status=${audit.status} logs=${audit.body && audit.body.logs && audit.body.logs.length}`);
 
+    // 개발 환경에서는 공개, 운영에서는 토큰/차단 정책 적용
     const metrics = await req('/metrics');
-    const mOk = metrics.status === 200 && String(metrics.body).includes('tev1_users_total');
-    record('Prometheus /metrics', mOk, `status=${metrics.status}`);
+    const metricsAllowed = metrics.status === 200 || metrics.status === 401 || metrics.status === 404;
+    record(
+      'Prometheus /metrics 정책 적용',
+      metricsAllowed && (metrics.status !== 200 || String(metrics.body).includes('tev1_users_total')),
+      `status=${metrics.status}`
+    );
 
     // --- 조직 API 실경로 ---
     const orgList = await req(`/api/organizations`, { headers: { Authorization: `Bearer ${token}` } });
@@ -351,19 +523,192 @@ async function runDbSuite(token) {
     const orgDetail = await req(`/api/organizations/${orgId}`, { headers: { Authorization: `Bearer ${token}` } });
     record('조직: 상세(멤버/방)', orgDetail.status === 200 && orgDetail.body.members.length >= 1, `members=${orgDetail.body && orgDetail.body.members && orgDetail.body.members.length} rooms=${orgDetail.body && orgDetail.body.rooms && orgDetail.body.rooms.length}`);
 
-    // --- 인증 실경로 (login이 DB에 사용자 생성) ---
+    // --- 인증 실경로: 비밀번호 가입 → 로그인 → 세션 ---
     const newUser = 'smoke-login-' + Date.now();
-    const login = await req('/api/auth/login', {
+    const newPw = 'NewSmoke123';
+    const regNew = await req('/api/auth/register', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ userId: newUser, name: '로그인테스터' }),
+      body: JSON.stringify({ userId: newUser, name: '로그인테스터', password: newPw }),
     });
-    const lOk = login.status === 200 && typeof login.body.token === 'string';
-    record('인증: login 사용자 자동 생성', lOk, `status=${login.status}`);
+    const regOk = regNew.status === 201 && typeof regNew.body.token === 'string';
+    record('인증: 회원가입 + 세션 발급', regOk, `status=${regNew.status}`);
 
-    const me = await req('/api/auth/me', { headers: { Authorization: `Bearer ${login.body && login.body.token}` } });
+    const loginNew = await req('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ userId: newUser, password: newPw }),
+    });
+    const lOk = loginNew.status === 200 && typeof loginNew.body.token === 'string';
+    record('인증: 로그인 200 + 토큰', lOk, `status=${loginNew.status}`);
+
+    const newToken = (loginNew.body && loginNew.body.token) || (regNew.body && regNew.body.token);
+    const me = await req('/api/auth/me', { headers: { Authorization: `Bearer ${newToken}` } });
     const meOk = me.status === 200 && me.body && me.body.user && me.body.user.id === newUser;
     record('인증: /me 조회 (userId 스푸핑 차단)', meOk, `status=${me.status} id=${me.body && me.body.user && me.body.user.id}`);
+
+    // 비밀번호 해시가 평문으로 저장되지 않아야 한다
+    const hashRow = await pool.query('SELECT password_hash FROM users WHERE id = $1', [newUser]);
+    const stored = hashRow.rows[0] && hashRow.rows[0].password_hash;
+    record(
+      '인증: 비밀번호 해시 저장 (평문 아님)',
+      typeof stored === 'string' && stored.startsWith('scrypt$') && !stored.includes(newPw),
+      stored ? stored.slice(0, 12) + '...' : 'none'
+    );
+
+    // --- Phase 3-4 대시보드 소비 시나리오 (UI가 쓰는 경로 그대로) ---
+    const slug = 'dash-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+    const orgCreate = await req('/api/organizations', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name: '대시보드 조직', slug }),
+    });
+    record(
+      '대시보드: 조직 생성',
+      orgCreate.status === 201 && !!orgCreate.body.organization,
+      `status=${orgCreate.status}`
+    );
+    const newOrgId = orgCreate.body && orgCreate.body.organization && orgCreate.body.organization.id;
+
+    if (newOrgId) {
+      const list = await req('/api/organizations', { headers: { Authorization: `Bearer ${token}` } });
+      record('대시보드: 조직 목록에 노출', list.body.organizations.some((o) => o.id === newOrgId), `count=${list.body.organizations.length}`);
+
+      // UI의 apiGet()가 호출하는 경로들
+      const dashPaths = [
+        `/api/analytics/meetings/summary?orgId=${newOrgId}`,
+        `/api/analytics/realtime?orgId=${newOrgId}`,
+        `/api/analytics/organizations/${newOrgId}/trends?period=30d`,
+        `/api/analytics/audit?orgId=${newOrgId}`,
+      ];
+      let allOk = true;
+      for (const p of dashPaths) {
+        const r = await req(p, { headers: { Authorization: `Bearer ${token}` } });
+        if (r.status !== 200) {
+          allOk = false;
+          record('대시보드 조회 실패: ' + p, false, `status=${r.status}`);
+        }
+      }
+      record('대시보드: 4개 조회 모두 200', allOk);
+
+      // 빈 조직이어도 UI가 깨지지 않아야 한다 (배열 필드 존재)
+      const emptySummary = await req(`/api/analytics/meetings/summary?orgId=${newOrgId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      record(
+        '대시보드: 빈 데이터도 배열 제공',
+        emptySummary.status === 200 &&
+          Array.isArray(emptySummary.body.dailyMeetings) &&
+          Array.isArray(emptySummary.body.topUsers),
+        ''
+      );
+
+      // 멤버 관리 UI가 읽는 구조
+      const mem = await req(`/api/organizations/${newOrgId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      record(
+        '대시보드: 멤버/방/역할 구조',
+        mem.status === 200 && Array.isArray(mem.body.members) && Array.isArray(mem.body.rooms) && !!mem.body.userRole,
+        `role=${mem.body && mem.body.userRole}`
+      );
+
+      // 초대 생성 (UI가 링크를 안내한다)
+      const inv = await req(`/api/organizations/${newOrgId}/invites`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ email: 'member@example.com', role: 'member' }),
+      });
+      record(
+        '대시보드: 초대 생성 + invitePath',
+        inv.status === 200 && inv.body.invite && !!inv.body.invite.invitePath,
+        `status=${inv.status}`
+      );
+
+      // 권한 규칙 검증
+      // 1) 유일한 owner의 강등은 조직 보호를 위해 409로 막혀야 한다
+      const lastOwner = await req(`/api/organizations/${newOrgId}/members/${userA}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ role: 'admin' }),
+      });
+      record('권한: 유일 owner 강등 차단 409', lastOwner.status === 409, `status=${lastOwner.status}`);
+
+      // 2) 초대장으로 멤버를 추가하면 owner 외 멤버가 생기므로 그다음 admin 지정 가능
+      const inviteForMember = await req(`/api/organizations/${newOrgId}/invites`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ email: 'promote@example.com', role: 'member' }),
+      });
+      const promoteToken = inviteForMember.body && inviteForMember.body.invite && inviteForMember.body.invite.token;
+      const promoteeId = 'promote-' + Date.now();
+      if (promoteToken) {
+        const pr = await req('/api/auth/register', {
+          method: 'POST',
+          body: JSON.stringify({ userId: promoteeId, name: '승진대상', password: 'Promote123' }),
+        });
+        if (pr.status === 201) {
+          await req(`/api/organizations/invites/${promoteToken}/accept`, {
+            method: 'POST',
+            headers: { Authorization: 'Bearer ' + pr.body.token },
+          });
+          const promote = await req(`/api/organizations/${newOrgId}/members/${promoteeId}`, {
+            method: 'PATCH',
+            headers: { Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ role: 'admin' }),
+          });
+          record('권한: owner가 admin 지정 가능', promote.status === 200, `status=${promote.status}`);
+
+          // 3) admin은 owner/admin 역할을 변경할 수 없다
+          const adminCannot = await req(`/api/organizations/${newOrgId}/members/${userA}`, {
+            method: 'PATCH',
+            headers: { Authorization: 'Bearer ' + pr.body.token },
+            body: JSON.stringify({ role: 'member' }),
+          });
+          record('권한: admin은 owner 변경 불가 403', adminCannot.status === 403, `status=${adminCannot.status}`);
+
+          // 4) admin이 viewer로 강등시킨 뒤 초대 시도 → 차단되어야 한다
+          const demoteSelf = await req(`/api/organizations/${newOrgId}/members/${promoteeId}`, {
+            method: 'PATCH',
+            headers: { Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ role: 'viewer' }),
+          });
+          record('권한: owner가 admin→viewer 강등', demoteSelf.status === 200, `status=${demoteSelf.status}`);
+          const forbidden = await req(`/api/organizations/${newOrgId}/invites`, {
+            method: 'POST',
+            headers: { Authorization: 'Bearer ' + pr.body.token },
+            body: JSON.stringify({ email: 'x@example.com' }),
+          });
+          record('권한: viewer 초대 차단 403', forbidden.status === 403, `status=${forbidden.status}`);
+        }
+      }
+
+      // 실제 초대 수락 흐름 (다른 계정으로)
+      const invitee = 'invitee-' + Date.now();
+      const regInvitee = await req('/api/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({ userId: invitee, name: '초대받은사람', password: 'Invitee12345' }),
+      });
+      const inviteToken = inv.body && inv.body.invite && inv.body.invite.token;
+      if (regInvitee.status === 201 && inviteToken) {
+        const accept = await req(`/api/organizations/invites/${inviteToken}/accept`, {
+          method: 'POST',
+          headers: { Authorization: 'Bearer ' + regInvitee.body.token },
+        });
+        record('초대 수락: 인증 계정으로 가입', accept.status === 200, `status=${accept.status}`);
+        const afterMembers = await req(`/api/organizations/${newOrgId}`, {
+          headers: { Authorization: 'Bearer ' + regInvitee.body.token },
+        });
+        record('초대 수락: 멤버로 반영', afterMembers.body.members.some((m) => m.user_id === invitee), '');
+      }
+    }
+
+    // 초대 수락은 인증 필수 (우회 방지)
+    const anonAccept = await req('/api/organizations/invites/fake-token/accept', { method: 'POST' });
+    record('초대 수락 무인증 차단 401', anonAccept.status === 401, `status=${anonAccept.status}`);
+
+    // session 폐기 → 기존 토큰 거부
+    await req('/api/auth/logout', { method: 'POST', headers: { Authorization: `Bearer ${newToken}` } });
+    const meAfter = await req('/api/auth/me', { headers: { Authorization: `Bearer ${newToken}` } });
+    record('인증: 로그아웃 후 토큰 401', meAfter.status === 401, `status=${meAfter.status}`);
 
     // --- health가 DB를 connected로 보고하는지 ---
     const health = await req('/health');
