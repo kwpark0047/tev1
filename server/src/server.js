@@ -10,6 +10,7 @@ const Redis = require('ioredis');
 const { createAdapter } = require('@socket.io/redis-adapter');
 const { Server } = require('socket.io');
 const mailer = require('./mailer');
+const QRCode = require('qrcode');
 const totp = require('./totp');
 const {
   hashPassword,
@@ -1769,7 +1770,27 @@ app.post('/api/auth/2fa/setup', requireAuth, requireDb, async (req, res) => {
       [req.user.id]
     );
 
-    res.json({ secret, otpauthUri: uri, digits: totp.DIGITS, period: totp.PERIOD });
+    // 인증앱 스캔용 QR (SVG 인라인 - 외부 이미지 요청이 없어 CSP/프록시와 무관)
+    let qrSvg = null;
+    try {
+      qrSvg = await QRCode.toString(uri, {
+        type: 'svg',
+        margin: 1,
+        width: 220,
+        errorCorrectionLevel: 'M',
+        color: { dark: '#1c2030', light: '#ffffff' },
+      });
+      // 방어적 확인: 클라이언트에 그대로 삽입되므로 스크립트/이벤트가 섞이면 버린다
+      if (/<script|on\w+\s*=|javascript:/i.test(qrSvg)) {
+        console.error('2FA QR에 예상치 못한 콘텐츠가 포함되어 폐기합니다.');
+        qrSvg = null;
+      }
+    } catch (qrErr) {
+      // QR 생성 실패도 가입 흐름을 막지 않는다 (수동 입력은 항상 가능)
+      console.error('2FA QR 생성 실패:', qrErr.message);
+    }
+
+    res.json({ secret, otpauthUri: uri, qrSvg, digits: totp.DIGITS, period: totp.PERIOD });
   } catch (e) {
     console.error('2fa setup error:', e);
     res.status(500).json({ error: '2FA 설정을 시작하지 못했습니다.' });

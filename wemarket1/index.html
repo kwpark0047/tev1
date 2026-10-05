@@ -2381,7 +2381,7 @@ async function doSetup2FA() {
     document.getElementById('faSetupBox').style.display = 'block';
     document.getElementById('faActiveBox').style.display = 'none';
     document.getElementById('faSecretBox').textContent = data.secret;
-    renderQrCode(data.otpauthUri);
+    renderQrCode(data.otpauthUri, data.qrSvg);
     document.getElementById('faSetupCode').value = '';
     setTimeout(() => document.getElementById('faSetupCode')?.focus(), 40);
     msg('ok', '인증앱에 키를 등록한 뒤 코드를 입력하세요.');
@@ -2391,18 +2391,40 @@ async function doSetup2FA() {
 }
 
 // otpauth URI를 QR 코드로 렌더링 (간단한 구현: 외부 서비스 없이 캔버스 생성)
-// 외부 이미지 요청을 피하기 위해 qrcode 라이브러리를 직접 호출하지 않고,
-// 등록용 URI와 키를 모두 텍스트로 함께 제공한다.
-function renderQrCode(uri) {
+/**
+ * 2FA 등록용 QR 코드 표시.
+ * 서버가 생성한 인라인 SVG를 사용한다(외부 이미지 요청 없음 → CSP/프록시 무관).
+ * QR이 없거나 생성이 실패한 경우에만 수동 입력 경로를 안내한다.
+ */
+function renderQrCode(uri, qrSvg) {
   const box = document.getElementById('faQrBox');
   if (!box) return;
-  box.innerHTML =
-    '<div style="font-size:11px;color:#8b90b8;line-height:1.6;">' +
-    '인증앱에서 "키 직접 입력"으로 위 키를 등록하세요.<br>' +
-    '<span style="color:#c3c8ea;">QR 코드가 필요하면 아래 주소를 인증앱 "링크 추가"로 입력하세요:</span><br>' +
+
+  const manualHint =
+    '<div style="font-size:11px;color:#8b90b8;line-height:1.6;margin-top:8px;">' +
+    'QR이 인식되지 않으면 인증앱의 "키 직접 입력"으로 위 키를 등록하세요.' +
+    '</div>' +
+    '<details style="margin-top:6px;">' +
+    '<summary style="font-size:11px;color:#8b90b8;cursor:pointer;">수동 입력용 주소</summary>' +
     '<code style="display:block;margin-top:4px;font-size:10px;word-break:break-all;color:#c3c8ea;">' +
     escapeHtml(uri) +
-    '</code></div>';
+    '</code></details>';
+
+  if (!qrSvg) {
+    // QR 생성 실패 시 수동 입력 경로만 제공
+    box.innerHTML =
+      '<div style="font-size:11px;color:#f0c674;line-height:1.6;margin-bottom:6px;">' +
+      'QR 코드를 생성하지 못했습니다. 아래 키를 직접 입력해 주세요.' +
+      '</div>' + manualHint;
+    return;
+  }
+
+  // 서버가 생성한 SVG를 그대로 삽입한다.
+  // qrcode 라이브러리 출력은 <svg> 요소 하나로만 구성되며 스크립트를 포함하지 않는다.
+  box.innerHTML =
+    '<div style="display:inline-block;background:#fff;padding:8px;border-radius:4px;line-height:0;">' +
+    qrSvg +
+    '</div>' + manualHint;
 }
 
 function showRecoveryCodes(codes) {

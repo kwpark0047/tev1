@@ -116,8 +116,13 @@ function verifyCode(secretBase32, code, { window = 1, atMs = Date.now() } = {}) 
   return false;
 }
 
-/** 인증앤용 otpauth:// URI */
-function otpauthUri({ secret, account, issuer }) {
+/**
+ * 인증앱용 otpauth:// URI
+ *
+ * digital_signature 카운터를 붙이지 않는 이유: 신원확인용이 아니라 로그인용 TOTP이므로
+ * 전자서명 필드는 불필요하다. 반면 issuer와 이미지는 인증앱이 계정을 올바르게 묶는 데 쓰인다.
+ */
+function otpauthUri({ secret, account, issuer, image }) {
   const label = encodeURIComponent(`${issuer}:${account}`);
   const params = new URLSearchParams({
     secret,
@@ -126,6 +131,7 @@ function otpauthUri({ secret, account, issuer }) {
     digits: String(DIGITS),
     period: String(PERIOD),
   });
+  if (image) params.set('image', image);
   return `otpauth://totp/${label}?${params.toString()}`;
 }
 

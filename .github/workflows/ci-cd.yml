@@ -39,6 +39,12 @@ jobs:
       - name: Frontend static check
         run: npm run test:frontend
 
+      - name: TOTP unit test
+        run: npm run test:totp
+
+      - name: 2FA QR scan test
+        run: npm run test:qr
+
       - name: Server smoke test
         run: npm run test:smoke
 

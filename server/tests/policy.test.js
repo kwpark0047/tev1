@@ -302,6 +302,23 @@ async function main() {
         method: 'POST',
         headers: { Authorization: `Bearer ${tokC}` },
       });
+      // QR 코드 검증 (신규)
+      record('QR: setup 응답에 SVG 포함', typeof setup.body.qrSvg === 'string' && setup.body.qrSvg.startsWith('<svg'), `type=${typeof setup.body.qrSvg}`);
+      record('QR: SVG에 스크립트 없음', typeof setup.body.qrSvg === 'string' && !/<script|on\w+\s*=|javascript:/i.test(setup.body.qrSvg), '');
+      record('QR: 시크릿이 QR 경로에 포함됨(스캔 가능)', typeof setup.body.qrSvg === 'string' && setup.body.qrSvg.includes('<path'), `len=${(setup.body.qrSvg || '').length}`);
+
+      // otpauth URI 형식 재검증
+      const qrUri = setup.body.otpauthUri || '';
+      const uriParams = (() => { try { return new URLSearchParams(qrUri.split('?')[1] || ''); } catch (_) { return null; } })();
+      record(
+        'QR: otpauth URI 파라미터 정합',
+        !!uriParams && uriParams.get('secret') === setup.body.secret
+          && uriParams.get('issuer') === 'TEV1'
+          && uriParams.get('algorithm') === 'SHA1'
+          && uriParams.get('digits') === '6'
+          && uriParams.get('period') === '30',
+        uriParams ? uriParams.toString().slice(0, 90) : qrUri.slice(0, 60)
+      );
       const confirm = await req('/api/auth/2fa/confirm', {
         method: 'POST',
         headers: { Authorization: `Bearer ${tokC}` },

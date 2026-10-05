@@ -275,6 +275,30 @@ kubectl logs -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx
 - [ ] 의존성 자동 업데이트 (Dependabot/Renovate)
 - [ ] 감사 로그 활성화 및 모니터링
 
+## 2단계 인증(TOTP) 운영
+
+별도 설정 없이 동작한다. QR 코드는 서버가 `qrcode`로 인라인 SVG를 생성해
+`POST /api/auth/2fa/setup` 응답의 `qrSvg`에 포함한다(외부 이미지 요청 없음).
+
+사용자가 `QR 스캔 → 6자리 코드 입력`으로 활성화한다.
+
+- **활성화 전**: `totp_secret`만 저장되고 `totp_enabled=false`. 로그인에 영향 없음
+- **확정 시**: `totp_confirmed_at` 기록, 복구 코드 10개 발급(해시 저장)
+- **로그인**: 코드 없이 로그인 시 `401 TOTP_REQUIRED`, 복구 코드는 1회성
+
+운영 시 주의:
+
+- `SESSION_TTL_HOURS`(기본 12h)가 로그인 세션 수명을 결정한다.
+- TOTP 자체 유효시간은 30초이며 서버는 ±1 윈도우(총 90초)만 허용한다.
+  서버 시계가 NTP로 동기화되어 있지 않으면 간헐적으로 인증이 실패한다.
+- 사용자가 인증앱을 분실하면 복구 코드로만 복구할 수 있다.
+  복구 코드는 발급 시 1회만 표시되므로 사전 안내가 필요하다.
+
+```bash
+# 서버 시계 동기화 확인 (권장)
+timedatectl status
+```
+
 ## 참고 자료
 
 - [Docker Best Practices](https://docs.docker.com/develop/develop-images/dockerfile_best-practices/)
