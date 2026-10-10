@@ -3,8 +3,8 @@ kind: Kustomization
 
 namespace: tev1
 
-bases:
-- ../../base
+resources:
+  - ../../base
 
 replicas:
 - name: tev1-ws
@@ -14,40 +14,39 @@ images:
 - name: tev1-ws
   newTag: "v1.2.3"
 
-patchesStrategicMerge:
-- |
-  apiVersion: apps/v1
-  kind: Deployment
-  metadata:
-    name: tev1-ws
-    namespace: tev1
-  spec:
-    replicas: 10
-    template:
-      spec:
-        containers:
-        - name: tev1-ws
-          resources:
-            requests:
-              cpu: "1000m"
-              memory: "512Mi"
-            limits:
-              cpu: "2000m"
-              memory: "1Gi"
-          env:
+patches:
+- patch: |-
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: tev1-ws
+      namespace: tev1
+    spec:
+      template:
+        spec:
+          containers:
+          - name: tev1-ws
+            resources:
+              requests:
+                cpu: "1000m"
+                memory: "512Mi"
+              limits:
+                cpu: "2000m"
+                memory: "1Gi"
+            env:
             - name: LOG_LEVEL
               value: "warn"
-        affinity:
-          podAntiAffinity:
-            requiredDuringSchedulingIgnoredDuringExecution:
-            - labelSelector:
-                matchExpressions:
-                - key: app
-                  operator: In
-                  values:
-                  - tev1-ws
-              topologyKey: topology.kubernetes.io/zone
-
-images:
-- name: tev1-ws
-  newTag: "v1.2.3-prod"
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                    - tev1-ws
+                topologyKey: topology.kubernetes.io/zone
+  target:
+    kind: Deployment
+    name: tev1-ws
+    namespace: tev1
