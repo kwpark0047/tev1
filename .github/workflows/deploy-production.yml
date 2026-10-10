@@ -1,0 +1,33 @@
+name: Deploy Production
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/k8s/**'
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/k8s-set-context@v4
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG_PROD }}
+
+      - name: Validate kustomize
+        run: |
+          kubectl kustomize server/k8s/overlays/production
+
+      - name: Deploy to production
+        run: |
+          kubectl apply -k server/k8s/overlays/production
+        env:
+          KUBECONFIG: ${{ secrets.KUBECONFIG_PROD }}
