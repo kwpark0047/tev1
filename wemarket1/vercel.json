@@ -1,7 +1,6 @@
 {
   "buildCommand": "echo 'Static site - no build needed'",
   "outputDirectory": ".",
-  "framework": "none",
   "installCommand": "echo 'No install needed'",
   "devCommand": "echo 'Static site - no dev server needed'",
   "headers": [
