@@ -10,4 +10,3 @@ data:
   WS_HEARTBEAT_INTERVAL: "30000"
   WS_MAX_RECONNECT_ATTEMPTS: "5"
   CORS_ORIGINS: "https://tev1.example.com,https://tev1-admin.example.com"
-  LOG_LEVEL: "info"

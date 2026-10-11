@@ -22,18 +22,3 @@ images:
 - name: tev1-ws
   newName: ghcr.io/your-org/tev1-ws
   newTag: latest
-
-configMapGenerator:
-- name: tev1-ws-config
-  behavior: merge
-  literals:
-    - NODE_ENV=production
-    - PORT=8081
-    - LOG_LEVEL=info
-
-secretGenerator:
-- name: tev1-ws-secrets
-  literals:
-    - JWT_SECRET=CHANGE_THIS_IN_PRODUCTION
-    - REDIS_PASSWORD=CHANGE_THIS_REDIS_PASSWORD
-EOF
