@@ -18,7 +18,7 @@ openssl genrsa -out ${CERT_DIR}/tls.key 2048
 openssl req -new -key ${CERT_DIR}/tls.key -out ${CERT_DIR}/tls.csr -subj "/CN=ws.tev1.example.com/O=TEV1/OU=Development"
 
 # 자체 서명 인증서 생성 (1년 유효)
-openssl x509 -req -in ${CERT_DIR}/tls.csr -signkey ${CERT_DIR}/tls.key -out ${CERT_DIR}/tls.crt -days 365 -extensions v3_req -extensions v3_req -config <(
+openssl x509 -req -in ${CERT_DIR}/tls.csr -signkey ${CERT_DIR}/tls.key -out ${CERT_DIR}/tls.crt -days 365 -extensions v3_req -config <(
 cat <<EOF
 [req]
 distinguished_name = req_distinguished_name

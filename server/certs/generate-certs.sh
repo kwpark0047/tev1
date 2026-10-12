@@ -29,7 +29,7 @@ metadata:
 spec:
   acme:
     server: https://acme-v02.api.letsencrypt.org/directory
-    email: admin@tev1.example.com
+    email: $EMAIL
     privateKeySecretRef:
       name: letsencrypt-prod-key
     solvers:
@@ -44,18 +44,15 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: tev1-tls-secret
-  namespace: tev1
+  namespace: $NAMESPACE
 spec:
   secretName: tev1-tls-secret
   issuerRef:
     name: letsencrypt-prod
     kind: ClusterIssuer
   dnsNames:
-    - ws.tev1.example.com
-    - api.tev1.example.com
-  issuerRef:
-    name: letsencrypt-prod
-    kind: ClusterIssuer
+    - $DOMAIN
+    - api.$DOMAIN
   duration: 2160h # 90일
   renewBefore: 360h # 15일 전 갱신
 EOF
